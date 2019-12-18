@@ -1,0 +1,28 @@
+Treatments	Week	n()
+Control	4	6
+Control	5	6
+Control	6	6
+Control	10	6
+Control	14	5
+Control	15	6
+Control	16	6
+Control	20	6
+Control	45	6
+Disturbance	4	5
+Disturbance	5	4
+Disturbance	6	4
+Disturbance	10	5
+Disturbance	14	4
+Disturbance	15	3
+Disturbance	16	5
+Disturbance	20	4
+Disturbance	45	2
+Disturbance + Immigration	4	3
+Disturbance + Immigration	5	3
+Disturbance + Immigration	6	4
+Disturbance + Immigration	10	4
+Disturbance + Immigration	14	4
+Disturbance + Immigration	15	4
+Disturbance + Immigration	16	4
+Disturbance + Immigration	20	4
+Disturbance + Immigration	45	4

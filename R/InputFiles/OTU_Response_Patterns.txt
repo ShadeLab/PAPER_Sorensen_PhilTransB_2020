@@ -1,0 +1,50 @@
+OTU	Category
+OTU48	Sensitive
+OTU19	Sensitive
+OTU43	Sensitive
+OTU20	Sensitive
+OTU8	Sensitive
+OTU16	Sensitive
+OTU78	Sensitive
+OTU65	Sensitive
+OTU24	Sensitive
+OTU53	Sensitive
+OTU21	Sensitive
+OTU27	Sensitive
+OTU60	Sensitive
+OTU34	Sensitive
+OTU51	Early Transition
+OTU52	Early Transition
+OTU3	Early Transition
+OTU35	Early Transition
+OTU1	Early Transition
+OTU9	Early Transition
+OTU14	Opportunists
+OTU18	Opportunists
+OTU12	Opportunists
+OTU83	Opportunists
+OTU37	Immigrants
+OTU38	Immigrants
+OTU33	Late Transition
+OTU17	Sensitive
+OTU6	Late Transition
+OTU4	Late Transition
+OTU47	Opportunists
+OTU69	Sensitive
+OTU36	Late Transition
+OTU44	Late Transition
+OTU32	Late Transition
+OTU13	Late Transition
+OTU66	Late Transition
+OTU5	Late Transition
+OTU10	Late Transition
+OTU49	Late Transition
+OTU25	Sensitive
+OTU23	Late Transition
+OTU2	Late Transition
+OTU71	Immigrants
+OTU7	Immigrants
+OTU73	Immigrants
+OTU29	Immigrants
+OTU74	Immigrants
+OTU54	Immigrants

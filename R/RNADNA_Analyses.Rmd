@@ -1,0 +1,2906 @@
+---
+title: "RNA DNA Rarefaction Curves"
+author: "Jackson Sorensen"
+date: "6/6/2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Subset to separate RNA and DNA OTU tables
+For RNA DNA ratios, we first want to separate out the two samples types into different matrices. Then we need to subtract anything that was observed in the Negative controls from each sample. Finally we plot how many reads there are per sample. 
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(vegan)
+library(viridis)
+library(cowplot)
+library(grid)
+library(gridExtra)
+setwd("~/GitHub_Repos/ShadeLab/PAPER_Sorensen_InPrep_Mesocosms/R")
+otu_collapsed <- readRDS("DataStructures/otu_collapsed.RDS")
+map <- readRDS("DataStructures/map.RDS")
+
+GnYlOrRd=colorRampPalette(colors=c("green", "yellow", "orange","red"), bias=2)
+
+map$DisIm <- paste(map$Disturbance, map$Immigration)
+Treatment <- data.frame(DisIm= c("N N", "Y N", "Y Y"), Treatments= c("Control", "Disturbance", "Disturbance + Immigration"))
+map <- left_join(map, Treatment, by="DisIm")
+
+otu_griffith <- otu_collapsed[,map$Extraction=="Griffith"]
+map_griffith <- map[map$Extraction=="Griffith",]
+
+
+
+otu_RNA <- otu_griffith[,map_griffith$`Nucleic Acid`=="RNA"]
+RNA_NC <- otu_RNA$NegControl_RNA
+
+otu_RNA <- otu_RNA[,!"NegControl_RNA"==colnames(otu_RNA)]
+
+otu_RNA <- otu_RNA-RNA_NC
+
+otu_RNA[otu_RNA<0]<- 0
+
+
+otu_DNA <- otu_griffith[,map_griffith$`Nucleic Acid`=="DNA"]
+DNA_NC <- otu_DNA$NegControl_DNA
+
+otu_DNA <- otu_DNA[,!"NegControl_DNA"==colnames(otu_DNA)]
+
+otu_DNA <- otu_DNA-DNA_NC
+
+otu_DNA[otu_DNA<0] <- 0
+
+plot(colSums(otu_DNA), main = "Number Reads Per Sample DNA")
+plot(colSums(otu_RNA), main= "Number of Reads Per Sample RNA")
+```
+
+# Rarefaction curves for DNA and RNA Samples
+Here we are plotting rarefaction curves in order to determine how many reads we can subsample down to for our analysis. 
+```{r}
+rare_colors <- rep("black", ncol(otu_DNA))
+rare_colors[grep("Meso", colnames(otu_DNA))] <- "green"
+DNA_rarecurve <- rarecurve(t(otu_DNA),step=5000, sample=max(colSums(otu_DNA)), label=FALSE, col=rare_colors)
+RNA_rarecurve <- rarecurve(t(otu_RNA), step=5000, sample=max(colSums(otu_RNA)), label=FALSE)
+
+setEPS()
+postscript(file="Figures/Rarefaction_Curves.ps", paper = "special", width = 6, height = 4)
+rarecurve(t(otu_DNA),step=5000, sample=max(colSums(otu_DNA)), label=FALSE)
+dev.off()
+```
+# Rarefying DNA and RNA samples
+Based on the rarefaction curves ~50K reads per sample looks sufficient for sequencing depth. Then removing any samples that have fewer than 50,000 sequences and don't have a pair in the opposite Nucleic Acid. 
+```{r}
+set.seed(13)
+RNA_rare <- t(rrarefy(t(otu_RNA), 50000))
+DNA_rare <- t(rrarefy(t(otu_DNA), 50000))
+
+RNA_rare<- RNA_rare[,colSums(RNA_rare)>49999]
+DNA_rare <- DNA_rare[,colSums(DNA_rare)>49999]
+
+T0_RNA <- RNA_rare[,grepl("Meso", colnames(RNA_rare))]
+RNA_rare <- RNA_rare[,!grepl("Meso", colnames(RNA_rare))]
+
+T0_DNA <- DNA_rare[,grepl("Meso", colnames(DNA_rare))]
+DNA_rare <- DNA_rare[,!grepl("Meso", colnames(DNA_rare))]
+
+DNA_Samples <- matrix(unlist(strsplit(colnames(DNA_rare), split = "_")), byrow = TRUE, ncol=2)[,1]
+
+RNA_Samples <- matrix(unlist(strsplit(colnames(RNA_rare), split = "_")), byrow = TRUE, ncol=2)[,1]
+
+DNA_rare <- DNA_rare[,DNA_Samples%in%RNA_Samples]
+RNA_rare <- RNA_rare[,RNA_Samples%in%DNA_Samples]
+```
+# Defining an active community at each site
+Will need to read up on Alan's paper to decide how to define this and what to do about phantom taxa. We're going to skip this for now and just work with DNA to get some analyses pushed through.
+
+
+```{r}
+
+Ratio <- RNA_rare/DNA_rare
+
+Ratio[is.nan(Ratio)] <- 0
+Ratio[is.infinite(Ratio)] <- 100
+
+Ratio[]
+
+Active_RNA <- RNA_rare
+Active_RNA[Ratio<1] <- 0
+
+Active_DNA <- DNA_rare
+Active_DNA[Ratio<1] <- 0
+
+Reserve_DNA <- DNA_rare
+Reserve_DNA[Ratio>1] <- 0
+
+
+Phantom_DNA <- Active_DNA
+Phantom_DNA[Ratio==100] <- 1
+
+
+Clean_Ratio <- Ratio
+Clean_Ratio[Active_DNA==0] <- NA
+
+Clean_Active <- Active_DNA
+Clean_Active[Active_DNA==0] <- NA
+
+```
+
+
+
+
+# Let's look at some beta diversity metrics
+So one of the main questions we are interested in is how repeatable the fire affected trajectories are through time. So let's do some beta diversity. 
+
+## PCoAs
+
+### DNA {.tabset}
+
+#### Total PCoA
+```{r}
+
+map_DNA <- map_griffith[map_griffith$Sample%in%colnames(DNA_rare),]
+
+Date_Split <- data.frame(Stage = factor(rep("Main", 9), levels = c("Main", "Late")), Timepoint=unique(map_DNA$Timepoint))
+
+Date_Split$Stage[Date_Split$Timepoint==9] <- "Late"
+
+map_DNA <- left_join(map_DNA, Date_Split, by="Timepoint")
+
+DNA.dist <- vegdist(t(DNA_rare), method = "bray")
+DNA.pcoa <- cmdscale(DNA.dist, eig = TRUE)
+
+map_DNA$Axis1 <- DNA.pcoa$points[,1]
+map_DNA$Axis2 <- DNA.pcoa$points[,2]
+
+DNA.eig1 <- DNA.pcoa$eig[1]/sum(DNA.pcoa$eig)
+DNA.eig2 <- DNA.pcoa$eig[2]/sum(DNA.pcoa$eig)
+
+
+Fig1A <- ggplot(map_DNA, aes(x=Axis1, y=Axis2))+
+  geom_point(aes(fill=Temperature, shape=Treatments, size=Week))+ #color=Disturbance
+  xlab(label = paste("PCoA 1: ", round(DNA.eig1, 3)*100, "% Variance Explained", sep=""))+
+  ylab(label = paste("PCoA 2: ", round(DNA.eig2, 3)*100, "% Variance Explained", sep=""))+
+ # ggtitle(label = "A. Total Community (rRNA gene)")+
+  scale_shape_manual(values=c(21,22,24))+
+  #scale_color_manual(values=c("#0D0887FF", "black"))+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  #scale_fill_brewer(palette = "Reds")+
+  #scale_fill_viridis_c(option = "plasma")+
+  theme_bw()+
+  scale_size(range=c(1,7), breaks=c(4,10,16,45))+
+  guides(color=FALSE, size=FALSE, shape=FALSE, fill=FALSE )
+
+Fig1A
+```
+
+#### Active PCoA
+```{r}
+Active_DNA.dist <- vegdist(t(Active_DNA), method="bray")
+Active_DNA.pcoa <- cmdscale (Active_DNA.dist, eig=TRUE)
+
+map_DNA$ActiveAxis1 <- Active_DNA.pcoa$points[,1]
+map_DNA$ActiveAxis2 <- Active_DNA.pcoa$points[,2]
+
+Active_DNA.eig1 <- Active_DNA.pcoa$eig[1]/sum(Active_DNA.pcoa$eig)
+Active_DNA.eig2 <- Active_DNA.pcoa$eig[2]/sum(Active_DNA.pcoa$eig)
+
+Fig1B <- ggplot(map_DNA, aes(x=ActiveAxis1, y=ActiveAxis2))+
+  geom_point(aes(fill=Temperature, shape=Treatments, size=Week))+
+  xlab(label = paste("PCoA 1: ", round(Active_DNA.eig1,3)*100, "% Variance Explained", sep = ""))+
+  ylab(label = paste("PCoA 2: ", round(Active_DNA.eig2,3)*100, "% Variance Explained", sep=""))+
+  #ggtitle(label="B. Active Community (rRNA:rRNA gene > 1)")+
+  scale_shape_manual(values=c(21,22,24))+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  #scale_color_manual(values=c("#0D0887FF", "black"))+
+  #scale_fill_viridis_c(option = "plasma")+
+  theme_bw()+
+  scale_size(range=c(1,7), breaks=c(4,10,16,45))+
+  guides(color=FALSE, size=FALSE, shape=FALSE, fill=FALSE )
+
+Fig1B
+```
+
+#### Reserve (Ratio <1) PCoA
+```{r}
+Reserve_DNA.dist <- vegdist(t(Reserve_DNA), method="bray")
+Reserve_DNA.pcoa <- cmdscale(Reserve_DNA.dist, eig=TRUE)
+
+map_DNA$ReserveAxis1 <- Reserve_DNA.pcoa$points[,1]
+map_DNA$ReserveAxis2 <- Reserve_DNA.pcoa$points[,2]
+
+Reserve_DNA.eig1 <- Reserve_DNA.pcoa$eig[1]/sum(Reserve_DNA.pcoa$eig)
+Reserve_DNA.eig2 <- Reserve_DNA.pcoa$eig[2]/sum(Reserve_DNA.pcoa$eig)
+
+Fig1C <- ggplot(map_DNA, aes(x=ReserveAxis1, y=ReserveAxis2))+
+  geom_point(aes(fill=Temperature, shape=Treatments, size=Week))+
+  xlab(label = paste("PCoA 1 : ", round(Reserve_DNA.eig1,3)*100, "% Variance Explained", sep = ""))+
+  ylab(label = paste("PCoA 2 : ",round(Reserve_DNA.eig2,3)*100, "% Variance Explained", sep=""))+
+  scale_shape_manual(values=c(21,22,24))+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  #scale_color_manual(values=c("#0D0887FF", "black"))+
+  ggtitle(label="Inactive Community (rRNA:rRNA gene < 1)")+
+  #scale_fill_viridis_c(option = "plasma")+
+  theme_bw()+
+  scale_size(range=c(1,7), breaks=c(4,10,16,45))+
+  guides(color=FALSE, size=FALSE, shape=FALSE, fill=FALSE )
+
+Fig1C
+```
+
+```{r}
+Fig1_Leg <- ggplot(map_DNA, aes(x=Axis1, y=Axis2))+
+  geom_point(aes(fill=Temperature, shape=Treatments, size=Week))+
+  xlab(label = paste(round(DNA.eig1, 3)*100, "% Variance Explained", sep=""))+
+  ylab(label = paste(round(DNA.eig2, 3)*100, "% Variance Explained", sep=""))+
+  ggtitle(label = "Total DNA")+
+  scale_shape_manual(values=c(21,22,24))+
+  #scale_color_manual(values=c("#0D0887FF", "black"))+
+  #scale_fill_viridis_c(option = "plasma")+
+  scale_fill_continuous(type= "gradient", low="white", high="red", breaks=c(14,37,60),labels=c(14,37,60))+
+  theme_bw()+
+  scale_size(range=c(1,7), breaks=c(4,10,16,45))+
+  theme(legend.position = "right", legend.box = "horizontal")+
+  guides(color=FALSE)
+
+Fig1_Leg
+
+Figure1_Legend <- get_legend(Fig1_Leg)
+
+setEPS()
+postscript("Figures/Figure4_PCoAs.eps", width=8, height=5,pointsize=10, paper="special")
+plot_grid(ncol=1, plot_grid(Fig1A, Fig1B, ncol=2), Figure1_Legend, rel_heights = c(2,1))
+dev.off()
+```
+
+
+
+### RNA {.tabset}
+#### Total RNA PCoA
+```{r}
+# map_RNA <- map_griffith[map_griffith$Sample%in%colnames(RNA_rare),]
+# map_RNA <- left_join(map_RNA, Date_Split, by="Timepoint")
+# 
+# RNA.dist <- vegdist(t(RNA_rare), method = "bray")
+# RNA.pcoa <- cmdscale(RNA.dist, eig = TRUE)
+# 
+# map_RNA$Axis1 <- RNA.pcoa$points[,1]
+# map_RNA$Axis2 <- RNA.pcoa$points[,2]
+# 
+# RNA.eig1 <- RNA.pcoa$eig[1]/sum(RNA.pcoa$eig)
+# RNA.eig2 <- RNA.pcoa$eig[2]/sum(RNA.pcoa$eig)
+# 
+# ggplot(map_RNA, aes(x=Axis1, y=Axis2))+
+#   geom_point(aes(col=Temperature, shape=Treatments, size=Timepoint))+
+#   xlab(label=paste(round(RNA.eig1,3)*100, "% Variance Explained", sep=""))+
+#   ylab(label=paste(round(RNA.eig2,3)*100, "% Variance Explained", sep=""))+
+#   ggtitle(label = "RNA PCoA")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+
+
+#### Active RNA PCoA
+
+```{r}
+# Active_RNA.dist <- vegdist(t(Active_RNA), method = "bray")
+# Active_RNA.pcoa <- cmdscale(Active_RNA.dist, eig = TRUE)
+# 
+# map_RNA$ActiveAxis1 <- Active_RNA.pcoa$points[,1]
+# map_RNA$ActiveAxis2 <- Active_RNA.pcoa$points[,2]
+# 
+# Active_RNA.eig1 <- Active_RNA.pcoa$eig[1]/sum(Active_RNA.pcoa$eig)
+# Active_RNA.eig2 <- Active_RNA.pcoa$eig[2]/sum(Active_RNA.pcoa$eig)
+# 
+# ggplot(map_RNA, aes(x=ActiveAxis1, y=ActiveAxis2))+
+#   geom_point(aes(col=Temperature, shape=Treatments, size=Timepoint))+
+#   xlab(label = paste(round(Active_RNA.eig1,3)*100, "% Variance Explained", sep = ""))+
+#   ylab(label=paste(round(Active_RNA.eig2,3)*100, "% Variance Explained", sep=""))+
+#   ggtitle(label="Active RNA PCoA")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+
+```
+
+
+## Protest on Disturbed Microcosms
+
+For this work we are interested in how repateable/consistent community trajectories are for the disturbed microcosms. We are assessing how correlated the changes in a microcosms community structure are with the changes in community structure of all the other microcosms in the same disturbance category by using a procrustes/protest. We are also asking how correlated the rate of change in community structure in a single microcosm is with all other microcosms(ie calculating the BC dissimialrity between timepoints 1 and 2, and between timepoints 2 and 3 and so on for all timepoint of a single microcosm and then correlating these values with the values calculated for all other microcosms in the same disturbance category). 
+
+```{r, message=FALSE}
+DNA_Disturbed <- DNA_rare[,map_DNA$Disturbance=="Y"]
+Active_DNA_Disturbed <- Active_DNA[,map_DNA$Disturbance=="Y"]
+
+map_DNA_Disturbed <- map_DNA[map_DNA$Disturbance=="Y",]
+
+Microcosms_Disturbed <- unique(map_DNA_Disturbed$Microcosm)
+
+# DNA_Disturbed<- DNA_Disturbed[,map_DNA_Disturbed$Timepoint<8]
+# Active_DNA_Disturbed <- Active_DNA_Disturbed[,map_DNA_Disturbed$Timepoint<8]
+# 
+# map_DNA_Disturbed <- map_DNA_Disturbed[map_DNA_Disturbed$Timepoint<8,]
+
+Protest_Results <- data.frame(Micro1=rep(NA, 36), Micro2=rep(NA,36), SumSq=rep(NA,36), Significance=rep(NA,36), Correlation= rep(NA,36), Nperms=rep(NA,36), Ntimepoints=rep(NA, 36) )
+
+Protest_Results_Active <- data.frame(Micro1=rep(NA, 36), Micro2=rep(NA,36), SumSq=rep(NA,36), Significance=rep(NA,36), Correlation= rep(NA,36), Nperms=rep(NA,36), Ntimepoints=rep(NA, 36) )
+
+Numbers=c(0,7,13,18,22,25,27,28,29)
+
+Correlation_Results <- data.frame(Micro1=rep(NA, 36), Micro2=rep(NA,36), PearsonsR= rep(NA,36), Significance=rep(NA,36), Ntimepoints=rep(NA,36))
+
+Correlation_Results_Active <- data.frame(Micro1=rep(NA, 36), Micro2=rep(NA,36), PearsonsR= rep(NA,36), Significance=rep(NA,36), Ntimepoints=rep(NA,36))
+
+for (i in 1:8){
+  x <- DNA_Disturbed[,map_DNA_Disturbed$Microcosm==Microcosms_Disturbed[i]]
+  x_active <- Active_DNA_Disturbed[,map_DNA_Disturbed$Microcosm==Microcosms_Disturbed[i]]
+  x_map <- map_DNA_Disturbed[map_DNA_Disturbed$Microcosm==Microcosms_Disturbed[i],]
+  for (e in i:8){
+    y <- DNA_Disturbed[,map_DNA_Disturbed$Microcosm==Microcosms_Disturbed[e+1]]
+    y_active <- Active_DNA_Disturbed[,map_DNA_Disturbed$Microcosm==Microcosms_Disturbed[e+1]]
+    y_map <- map_DNA_Disturbed[map_DNA_Disturbed$Microcosm==Microcosms_Disturbed[e+1],]
+    x_incl <- x[,x_map$Timepoint%in%y_map$Timepoint]
+    x_active_incl <- x_active[,x_map$Timepoint%in%y_map$Timepoint]
+    y_incl <- y[,y_map$Timepoint%in%x_map$Timepoint]
+    y_active_incl <- y_active[,y_map$Timepoint%in%x_map$Timepoint]
+    x_dist <- vegdist(t(x_incl), method = "bray")
+    x_active_dist <- vegdist(t(x_active_incl), method = "bray")
+    y_dist <- vegdist(t(y_incl), method = "bray")
+    y_active_dist <- vegdist(t(y_active_incl), method = "bray")
+    xy.pro <- protest(x_dist, y_dist)
+    xy_active.pro <- protest(x_active_dist, y_active_dist)
+    x_mat <- as.matrix(x_dist)
+    y_mat <- as.matrix(y_dist)
+    x_active_mat <- as.matrix(x_active_dist)
+    y_active_mat <- as.matrix(y_active_dist)
+    #x_linear <- x_mat[row(x_mat)==col(x_mat)+1]
+    #x_active_linear <- x_active_mat[row(x_active_mat)==col(x_active_mat)+1]
+    #y_linear <- y_mat[row(y_mat)==col(y_mat)+1]
+    #y_active_linear <- y_active_mat[row(y_active_mat)==col(y_active_mat)+1]
+    #xy.cor <- cor.test(x_linear, y_linear)
+    #xy_active.cor <- cor.test(x_active_linear, y_active_linear)
+    Protest_Results$Micro1[Numbers[i]+e] <- Microcosms_Disturbed[i]
+    Protest_Results$Micro2[Numbers[i]+e] <- Microcosms_Disturbed[e+1]
+    Protest_Results$SumSq[Numbers[i]+e] <- xy.pro$ss 
+    Protest_Results$Significance[Numbers[i]+e] <- xy.pro$signif
+    Protest_Results$Correlation[Numbers[i]+e] <- xy.pro$scale
+    Protest_Results$Nperms[Numbers[i]+e] <- xy.pro$permutations
+    Protest_Results$Ntimepoints[Numbers[i]+e] <- ncol(x_incl)
+    Protest_Results_Active$Micro1[Numbers[i]+e] <- Microcosms_Disturbed[i]
+    Protest_Results_Active$Micro2[Numbers[i]+e] <- Microcosms_Disturbed[e+1]
+    Protest_Results_Active$SumSq[Numbers[i]+e] <- xy_active.pro$ss 
+    Protest_Results_Active$Significance[Numbers[i]+e] <- xy_active.pro$signif
+    Protest_Results_Active$Correlation[Numbers[i]+e] <- xy_active.pro$scale
+    Protest_Results_Active$Nperms[Numbers[i]+e] <- xy_active.pro$permutations
+    Protest_Results_Active$Ntimepoints[Numbers[i]+e] <- ncol(x_active_incl)
+    # Correlation_Results$Micro1[Numbers[i]+e] <- Microcosms_Disturbed[i]
+    # Correlation_Results$Micro2[Numbers[i]+e] <- Microcosms_Disturbed[e+1]
+    # Correlation_Results$PearsonsR[Numbers[i]+e] <- xy.cor$estimate
+    # Correlation_Results$Significance[Numbers[i]+e] <- xy.cor$p.value
+    # Correlation_Results$Ntimepoints[Numbers[i]+e] <- length(x_linear)
+    # Correlation_Results_Active$Micro1[Numbers[i]+e] <- Microcosms_Disturbed[i]
+    # Correlation_Results_Active$Micro2[Numbers[i]+e] <- Microcosms_Disturbed[e+1]
+    # Correlation_Results_Active$PearsonsR[Numbers[i]+e] <- xy_active.cor$estimate
+    # Correlation_Results_Active$Significance[Numbers[i]+e] <- xy_active.cor$p.value
+    # Correlation_Results_Active$Ntimepoints[Numbers[i]+e] <- length(x_active_linear)
+  
+  }
+  
+}
+
+
+Full_NonSig <- Protest_Results[p.adjust(Protest_Results$Significance,method="fdr")>0.05,]
+
+Full_NonSig
+
+#Stage1_NonSig <- Protest_Results_Stage1[p.adjust(Protest_Results_Stage1$Significance, method="fdr")>0.05,]
+
+#Stage1_NonSig
+
+Protest_Results_Stage1 <- Protest_Results
+
+
+range(Protest_Results$Significance)
+sum(p.adjust(Protest_Results$Significance, method="fdr")<0.05)
+
+range(Protest_Results$Correlation)
+Protest_Results_Active
+
+sum(!Protest_Results$Significance<.05)
+nrow(Protest_Results)
+range(Protest_Results$Significance)
+range(Protest_Results$Correlation)
+
+range(Protest_Results_Active$Significance)
+sum(!Protest_Results_Active$Significance<0.05)
+
+
+Protest_Results
+
+range(p.adjust(method="fdr", Protest_Results$Significance))
+
+sum(p.adjust(method="fdr", Protest_Results$Significance)<0.05)
+
+```
+
+
+## Looking at betadispersion
+```{r}
+
+DNA_Disturbance_Im <- DNA_rare[, map_DNA$DisIm=="Y Y"] 
+DNA_Disturbance_Im_Active <- Active_DNA[,map_DNA$DisIm=="Y Y"]
+
+
+map_DNA_Disturbance_IM <- map_DNA[map_DNA$DisIm=="Y Y",]
+
+DNA_Disturbance <- DNA_rare[,map_DNA$DisIm=="Y N"]
+DNA_Disturbance_Active <- Active_DNA[,map_DNA$DisIm=="Y N"]
+
+map_DNA_Disturbance <- map_DNA[map_DNA$DisIm=="Y N",]
+
+DNA_Disturbed <- DNA_rare[,map_DNA$Disturbance=="Y"]
+DNA_Disturbed_Active <- Active_DNA[,map_DNA$Disturbance=="Y"]
+map_DNA_Disturbed <- map_DNA[map_DNA$Disturbance=="Y",]
+
+DNA_Disturbed_Active.dist <- vegdist(t(DNA_Disturbed_Active), method="bray")
+DNA_Disturbed_Active.disper <- betadisper(DNA_Disturbed_Active.dist, group=map_DNA_Disturbed$Date)
+
+Disturbed_Distances <- data.frame(Sample=names(DNA_Disturbed_Active.disper$distances), DistToMedian=DNA_Disturbed_Active.disper$distances)
+
+map_DNA_Disper_DisturbanceStage <- map_DNA[map_DNA$Timepoint<8,]
+map_DNA_Disper_RecoveryStage <- map_DNA[map_DNA$Timepoint>7,]
+
+
+DNA_Disturbance.dist <- vegdist(t(DNA_Disturbance), method = "bray")
+
+
+
+
+DNA_Disturbance.disper <- betadisper(DNA_Disturbance.dist, group = map_DNA_Disturbance$Date)
+DNA_Disturbance.disper$distances
+map_DNA_Disturbance$DistoMedian <- DNA_Disturbance.disper$distances
+
+DNA_Disturbance_Active.dist <- vegdist(t(DNA_Disturbance_Active), method = "bray")
+
+DNA_Disturbance_Active.disper <- betadisper(DNA_Disturbance_Active.dist, group = map_DNA_Disturbance$Date)
+map_DNA_Disturbance$ActiveDisttoMedian <- DNA_Disturbance_Active.disper$distances
+
+DisturbanceNoIM_Distances <- data.frame(Sample=names(DNA_Disturbance_Active.disper$distances), DistToMedian=DNA_Disturbance_Active.disper$distances)
+
+
+DNA_Disturbance_IM.dist <- vegdist(t(DNA_Disturbance_Im), method = "bray")
+DNA_Disturbance_IM.disper <- betadisper(DNA_Disturbance_IM.dist, group = map_DNA_Disturbance_IM$Date)
+
+DNA_Disturbance_IM_Active.dist <- vegdist(t(DNA_Disturbance_Im_Active), method = "bray")
+DNA_Disturbance_IM_Active.disper <- betadisper(DNA_Disturbance_IM_Active.dist, group = map_DNA_Disturbance_IM$Date)
+
+DisturbanceIM_Distances <- data.frame(Sample=names(DNA_Disturbance_IM_Active.disper$distances), DistToMedian=DNA_Disturbance_IM_Active.disper$distances)
+
+
+
+
+map_DNA_Disturbance_IM$DistoMedian <- DNA_Disturbance_IM.disper$distances  
+map_DNA_Disturbance_IM$ActiveDisttoMedian <- DNA_Disturbance_IM_Active.disper$distances
+
+DNA_Control <- DNA_rare[,map_DNA$Disturbance=="N"]
+DNA_Control_Active <- Active_DNA[,map_DNA$Disturbance=="N"]
+map_DNA_Control <- map_DNA[map_DNA$Disturbance=="N",]
+
+DNA_Control.dist <- vegdist(t(DNA_Control), method = "bray")
+DNA_Control.disper <- betadisper(DNA_Control.dist, group = map_DNA_Control$Date)
+
+DNA_Control_Active.dist <- vegdist(t(DNA_Control_Active), method = "bray")
+DNA_Control_Active.disper <- betadisper(DNA_Control_Active.dist, group = map_DNA_Control$Date)
+
+Control_Distances <- data.frame(Sample=names(DNA_Control_Active.disper$distances), DistToMedian=DNA_Control_Active.disper$distances)
+
+map_DNA_Control$DistoMedian <- DNA_Control.disper$distances
+map_DNA_Control$ActiveDisttoMedian <- DNA_Control_Active.disper$distances
+
+map_Dispersion <- rbind(map_DNA_Control, map_DNA_Disturbance, map_DNA_Disturbance_IM)
+
+
+DNA_Disturbance.disper$distances
+
+DNA_Disturbed<- DNA_rare[,map_DNA$Disturbance=="Y"]
+DNA_Active_Disturbed <- Active_DNA[,map_DNA$Disturbance=="Y"]
+DNA_Disturbed.dist <- vegdist(t(DNA_Disturbed), method="bray")
+DNA_Active_Disturbed.dist <- vegdist(t(DNA_Active_Disturbed), method = "bray")
+
+DNA.disper <- betadisper(DNA.dist, group = map_DNA$Disturbance)
+Active_DNA.disper <- betadisper(Active_DNA.dist, group = map_DNA$Disturbance)
+
+kruskal.test(x=c(DNA.disper$distances, Active_DNA.disper$distances), g=as.factor(c(rep("Total", 123),rep("Active", 123))))
+
+Disturbed_Dispersion_Total_v_Active <- c(DNA.disper$distances[map_DNA$Disturbance=="Y"], Active_DNA.disper$distances[map_DNA$Disturbance=="Y"])
+Disper.levels <- as.factor(c(rep("Total", length(DNA.disper$distances[map_DNA$Disturbance=="Y"])), rep("Active", length(DNA.disper$distances[map_DNA$Disturbance=="Y"]))))
+
+kruskal.test(Disturbed_Dispersion_Total_v_Active, Disper.levels)
+
+
+Dispersion_Distances_Early <- rbind(Disturbed_Distances, Control_Distances)
+Dispersion_Distance_Late <- rbind(DisturbanceNoIM_Distances, DisturbanceIM_Distances, Control_Distances)
+
+map_DNA_Disper_DisturbanceStage <- left_join(map_DNA_Disper_DisturbanceStage, Dispersion_Distances_Early, by="Sample")
+map_DNA_Disper_RecoveryStage <- left_join(map_DNA_Disper_RecoveryStage, Dispersion_Distance_Late, by="Sample")
+
+
+Fig5A <- ggplot(map_DNA_Disper_DisturbanceStage, aes(x=Week, y=DistToMedian,group=interaction(Week,Disturbance)))+
+  geom_boxplot(aes(group=interaction(Week, Disturbance), color=Disturbance), outlier.shape = NA)+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  geom_point(position=position_dodge(width=0.75),aes(color=Disturbance, shape=Treatments))+
+  scale_x_continuous(breaks=c(4,5,6,10,14,15,16))+
+  theme(axis.text.x = element_text(size=10))
+ 
+Fig5B <- ggplot(map_DNA_Disper_RecoveryStage, aes(x=Week, y=DistToMedian))+
+  geom_boxplot(aes(group=interaction(Week,Treatments), color=Treatments), outlier.shape = NA)+
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  geom_point(position=position_dodge(width=15),aes(color=Treatments, shape=Treatments))+
+  scale_x_continuous(breaks=c(20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+Fig5A_leg <- ggplot(map_DNA_Disper_DisturbanceStage, aes(x=Week, y=DistToMedian))+
+  geom_boxplot(aes(group=interaction(Week, Disturbance), color=Disturbance))+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)
+
+Fig5AB_leg <- ggplot(map_DNA_Disper_DisturbanceStage, aes(x=Week, y=DistToMedian))+
+  geom_boxplot(aes(group=interaction(Week, Disturbance), color=Disturbance))+
+  geom_point(position=position_dodge(width=15),aes(color=Disturbance, shape=Treatments))+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)
+
+Fig5B_leg <- ggplot(map_DNA_Disper_RecoveryStage, aes(x=Week, y=DistToMedian))+
+  geom_boxplot(aes(group=interaction(Week, Treatments), color=Treatments))+
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  guides(fill=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)
+
+Fig5A_Legend <- get_legend(Fig5A_leg)
+Fig5AB_Legend <- get_legend(Fig5AB_leg)
+Fig5B_Legend <- get_legend(Fig5B_leg)
+
+y5.grob <- textGrob("Distance to Median", 
+                   gp=gpar(fontface="bold", col="black", fontsize=15),rot=90)
+x5.grob <- textGrob("Week", 
+                   gp=gpar(fontface="bold", col="black", fontsize=15))
+
+Fig5 <- plot_grid(Fig5A, Fig5B, ncol=2, rel_widths = c(2,1))
+Figure5 <-  grid.arrange(arrangeGrob(Fig5, bottom = x5.grob, left = y5.grob))
+
+
+
+
+setEPS()
+postscript(file="Figures/Figure5_BetaDispersion.eps", paper="special", width=8, height = 5, pointsize = 10)
+plot_grid(nrow = 2, Figure5, plot_grid(ncol=3, Fig5A_Legend, Fig5AB_Legend,Fig5B_Legend), rel_heights = c(3,1))
+dev.off()
+
+```
+
+
+### Combined Betadispersion Plots {.tabset}
+#### Boxplot
+```{r}
+# ggplot(map_Dispersion, aes(x=Date, y=DistoMedian))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")#+
+# 
+# ggplot(map_Dispersion, aes(x=Date, y=ActiveDisttoMedian))+
+#   geom_boxplot(aes(group=Treatments, color=Temperature))+
+#   #facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+# 
+#  
+# ggplot(map_Dispersion, aes(x=Date, y=ActiveDisttoMedian, group= interaction(Date, Disturbance), fill=Disturbance))+
+#   geom_boxplot()+
+#   facet_grid(cols=vars(Stage), scales = "free_x", space="free")
+
+```
+
+#### Violin Plot
+```{r}
+# ggplot(map_Dispersion, aes(x=Date, y=DistoMedian))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space = "free")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+
+### Beta Dispersion Tests Disturbance vs Control
+```{r}
+Timepoints <- unique(map_DNA$Timepoint)
+
+
+Dispersion_Results <- data.frame(Timepoint=c(1:9), ControlMean=rep(NA,9), DisturbanceMean=rep(NA,9), TukeySignificance=rep(NA,9), Permutations=rep(NA,9), PermuSig=rep(NA,9), PermuF=rep(NA,9))
+Dispersion_Results_Active <- data.frame(Timepoint=c(1:9), ControlMean=rep(NA,9), DisturbanceMean=rep(NA,9), TukeySignificance=rep(NA,9), Permutations=rep(NA,9), PermuSig=rep(NA,9), PermuF=rep(NA,9))
+
+Dispersion_Results_InActive <- data.frame(Timepoint=c(1:9), ControlMean=rep(NA,9), DisturbanceMean=rep(NA,9), TukeySignificance=rep(NA,9), Permutations=rep(NA,9), PermuSig=rep(NA,9), PermuF=rep(NA,9))
+
+for(i in 1:length(Timepoints)){
+  x <- DNA_rare[,map_DNA$Timepoint==Timepoints[i]]
+  x_active <- Active_DNA[,map_DNA$Timepoint==Timepoints[i]]
+  x_inactive <- Reserve_DNA[,map_DNA$Timepoint==Timepoints[i]]
+  
+  x_map <- map_DNA[map_DNA$Timepoint==Timepoints[i],]
+  
+  x.dist <- vegdist(t(x), method = "bray")
+  x.disper <- betadisper(x.dist, group = x_map$Disturbance)
+  x.tukey <- TukeyHSD(x.disper)
+  x.permu <- permutest(x.disper)
+  
+  x_active.dist <- vegdist(t(x_active), method = "bray")
+  x_active.disper <- betadisper(x_active.dist, group = x_map$Disturbance)
+  x_active.tukey <- TukeyHSD(x_active.disper)
+  x_active.permu <- permutest(x_active.disper)
+ 
+  x_inactive.dist <- vegdist(t(x_inactive), method = "bray")
+  x_inactive.disper <- betadisper(x_inactive.dist, group = x_map$Disturbance)
+  x_inactive.tukey <- TukeyHSD(x_inactive.disper)
+  x_inactive.permu <- permutest(x_inactive.disper)
+  
+  Dispersion_Results$ControlMean[i] <- mean(x.disper$distances[x_map$Disturbance=="N"])
+  Dispersion_Results$DisturbanceMean[i] <- mean(x.disper$distances[x_map$Disturbance=="Y"])
+  Dispersion_Results$TukeySignificance[i] <- x.tukey$group[4]
+  Dispersion_Results$Permutations[i] <- x.permu$tab$N.Perm[1]
+  Dispersion_Results$PermuF[i] <- x.permu$tab$F[1]
+  Dispersion_Results$PermuSig[i] <- x.permu$tab$`Pr(>F)`[1]
+  
+  Dispersion_Results_Active$ControlMean[i] <- mean(x_active.disper$distances[x_map$Disturbance=="N"])
+  Dispersion_Results_Active$DisturbanceMean[i] <- mean(x_active.disper$distances[x_map$Disturbance=="Y"])
+  Dispersion_Results_Active$TukeySignificance[i] <- x_active.tukey$group[4]
+  Dispersion_Results_Active$Permutations[i] <- x_active.permu$tab$N.Perm[1]
+  Dispersion_Results_Active$PermuF[i] <- x_active.permu$tab$F[1]
+  Dispersion_Results_Active$PermuSig[i] <- x_active.permu$tab$`Pr(>F)`[1]
+  
+  Dispersion_Results_InActive$ControlMean[i] <- mean(x_inactive.disper$distances[x_map$Disturbance=="N"])
+  Dispersion_Results_InActive$DisturbanceMean[i] <- mean(x_inactive.disper$distances[x_map$Disturbance=="Y"])
+  Dispersion_Results_InActive$TukeySignificance[i] <- x_inactive.tukey$group[4]
+  Dispersion_Results_InActive$Permutations[i] <- x_inactive.permu$tab$N.Perm[1]
+  Dispersion_Results_InActive$PermuF[i] <- x_inactive.permu$tab$F[1]
+  Dispersion_Results_InActive$PermuSig[i] <- x_inactive.permu$tab$`Pr(>F)`[1]
+}
+Dispersion_Results
+Dispersion_Results_Active
+Dispersion_Results_InActive
+
+
+```
+
+### Beta Disperion comparing immigration and non immigration timepoints
+
+
+
+```{r}
+T8_Disturbed <- DNA_rare[,map_DNA$Timepoint==8&map_DNA$Disturbance=="Y"]
+T8_map <- map_DNA[map_DNA$Timepoint==8&map_DNA$Disturbance=="Y",]
+
+T8 <- DNA_rare[,map_DNA$Timepoint==8]
+
+T8_total_map <- map_DNA[map_DNA$Timepoint==8,]
+
+T8.dist <- vegdist(t(T8), method = "bray")
+
+T8.disper <- betadisper(T8.dist, group=T8_total_map$DisIm)
+TukeyHSD(T8.disper)
+
+T8_Disturbed.dist <- vegdist(t(T8_Disturbed), method = "bray")
+
+adonis(T8_Disturbed.dist~T8_map$Immigration)
+
+T8_Disturbed.disper <- betadisper(T8_Disturbed.dist, group = T8_map$Immigration)
+TukeyHSD(T8_Disturbed.disper)
+
+T8_Disturbed_Active <- Active_DNA[,map_DNA$Timepoint==8&map_DNA$Disturbance=="Y"]
+
+
+T8_Disturbed_Active.dist <- vegdist(t(T8_Disturbed_Active), method = "bray")
+
+adonis(T8_Disturbed_Active.dist~T8_map$Immigration)
+
+T8_Disturbed_Active.disper <- betadisper(T8_Disturbed_Active.dist, group = T8_map$Immigration)
+TukeyHSD(T8_Disturbed_Active.disper)
+
+T8_Disturbed_InActive <- Reserve_DNA[,map_DNA$Timepoint==8&map_DNA$Disturbance=="Y"]
+
+
+T8_Disturbed_InActive.dist <- vegdist(t(T8_Disturbed_InActive), method = "bray")
+
+adonis(T8_Disturbed_InActive.dist~T8_map$Immigration)
+
+T8_Disturbed_InActive.disper <- betadisper(T8_Disturbed_InActive.dist, group = T8_map$Immigration)
+TukeyHSD(T8_Disturbed_InActive.disper)
+
+
+
+T9_Disturbed <- DNA_rare[,map_DNA$Timepoint==9&map_DNA$Disturbance=="Y"]
+T9_map <- map_DNA[map_DNA$Timepoint==9&map_DNA$Disturbance=="Y",]
+
+T9_Disturbed.dist <- vegdist(t(T9_Disturbed), method = "bray")
+
+
+adonis(T9_Disturbed.dist~T9_map$Immigration)
+
+T9_Disturbed.disper <- betadisper(T9_Disturbed.dist, group = T9_map$Immigration)
+TukeyHSD(T9_Disturbed.disper)
+permutest(T9_Disturbed.disper)
+
+T9_Disturbed_Active <- Active_DNA[,map_DNA$Timepoint==9&map_DNA$Disturbance=="Y"]
+
+
+T9_Disturbed_Active.dist <- vegdist(t(T9_Disturbed_Active), method = "bray")
+
+
+adonis(T9_Disturbed_Active.dist~T9_map$Immigration)
+
+T9_Disturbed_Active.disper <- betadisper(T9_Disturbed_Active.dist, group = T9_map$Immigration)
+TukeyHSD(T9_Disturbed_Active.disper)
+permutest(T9_Disturbed_Active.disper)
+
+
+T9_Disturbed_InActive <- Reserve_DNA[,map_DNA$Timepoint==9&map_DNA$Disturbance=="Y"]
+
+
+T9_Disturbed_InActive.dist <- vegdist(t(T9_Disturbed_InActive), method = "bray")
+
+
+adonis(T9_Disturbed_InActive.dist~T9_map$Immigration)
+
+T9_Disturbed_InActive.disper <- betadisper(T9_Disturbed_InActive.dist, group = T9_map$Immigration)
+TukeyHSD(T9_Disturbed_InActive.disper)
+permutest(T9_Disturbed_InActive.disper)
+
+T9 <- DNA_rare[,map_DNA$Timepoint==9]
+T9_total_map <- map_DNA[map_DNA$Timepoint==9,]
+
+T9.dist <- vegdist(t(T9), method = "bray")
+
+T9.disper <- betadisper(T9.dist, group=T9_total_map$DisIm)
+
+TukeyHSD(T9.disper)
+
+```
+
+## When does Disturbed change from Control
+```{r}
+Permanova_Results <- data.frame(Timepoint=c(1:9), PseudoF=rep(NA,9), Rsqr=rep(NA,9), Pvalue=rep(NA,9))
+Permanova_Active_Results <- data.frame(Timepoint=c(1:9), PseudoF=rep(NA,9), Rsqr=rep(NA,9), Pvalue=rep(NA,9))
+Anosim_Results <- data.frame(Timepoint=c(1:9), Anosim_R=rep(NA,9),Pvalue=rep(NA,9))
+Anosim_Active_Results <- data.frame(Timepoint=c(1:9), Anosim_R=rep(NA,9), Pvalue=rep(NA,9))
+
+Dis_Anosim_Results <- data.frame(Timepoint=c(1:9), Anosim_R=rep(NA,9),Pvalue=rep(NA,9))
+Dis_Anosim_Active_Results <- data.frame(Timepoint=c(1:9), Anosim_R=rep(NA,9), Pvalue=rep(NA,9))
+
+Dis_Permanova_Results <- data.frame(Timepoint=c(1:9), PseudoF=rep(NA,9), Rsqr=rep(NA,9), Pvalue=rep(NA,9))
+Dis_Permanova_Active_Results <- data.frame(Timepoint=c(1:9), PseudoF=rep(NA,9), Rsqr=rep(NA,9), Pvalue=rep(NA,9))
+
+DNA_dis <- DNA_rare[,map_DNA$Disturbance=="Y"]
+DNA_Active_dis <- Active_DNA[,map_DNA$Disturbance=="Y"]
+map_dis <- map_DNA[map_DNA$Disturbance=="Y",]
+
+for(i in 1:9){
+  x <- DNA_rare[,map_DNA$Timepoint==i]
+  xdis <- DNA_dis[,map_dis$Timepoint==i]
+  x_active <- Active_DNA[,map_DNA$Timepoint==i]
+  x_active_dis <- DNA_Active_dis[,map_dis$Timepoint==i]
+  
+  x_map <- map_DNA[map_DNA$Timepoint==i,]
+  x_map_dis <- map_dis[map_dis$Timepoint==i,]
+  
+  x.dist <- vegdist(t(x), method="bray")
+  x_active.dist <- vegdist(t(x_active), method="bray")
+  xdis.dist <- vegdist(t(xdis),method="bray")
+  x_active_dis.dist <- vegdist(t(xdis), method="bray")
+  
+  x.nova <- adonis(x.dist~x_map$Disturbance)
+  x_active.nova <- adonis(x_active.dist~x_map$Disturbance)
+  x.sim <- anosim(x.dist, grouping = x_map$Disturbance)
+  x_active.sim <- anosim(x.dist, grouping=x_map$Disturbance)
+  
+  xdis.sim <- anosim(xdis.dist, grouping=x_map_dis$Immigration)
+  x_active_dis.sim <- anosim(x_active_dis.dist, grouping=x_map_dis$Immigration)
+  xdis.nova <- adonis(xdis.dist~x_map_dis$Immigration)
+  x_active_dis.nova <- adonis(x_active_dis.dist~x_map_dis$Immigration)
+  
+  
+  Dis_Anosim_Results$Anosim_R[i] <- xdis.sim$statistic
+  Dis_Anosim_Results$Pvalue[i] <- xdis.sim$signif
+  Dis_Anosim_Active_Results$Anosim_R[i] <- x_active_dis.sim$statistic
+  Dis_Anosim_Active_Results$Pvalue[i] <- x_active_dis.sim$signif
+  
+  
+
+  Dis_Permanova_Results$PseudoF[i] <- xdis.nova$aov.tab$F.Model[1]
+  Dis_Permanova_Results$Rsqr[i] <- xdis.nova$aov.tab$R2[1]
+  Dis_Permanova_Results$Pvalue[i] <- xdis.nova$aov.tab$`Pr(>F)`[1]
+  Dis_Permanova_Active_Results$PseudoF[i] <- x_active_dis.nova$aov.tab$F.Model[1]
+  Dis_Permanova_Active_Results$Rsqr[i] <- x_active_dis.nova$aov.tab$R2[1]
+  Dis_Permanova_Active_Results$Pvalue[i] <- x_active_dis.nova$aov.tab$`Pr(>F)`[1]
+  
+  
+  Anosim_Results$Anosim_R[i] <- x.sim$statistic
+  Anosim_Results$Pvalue[i] <- x.sim$signif
+  Anosim_Active_Results$Anosim_R[i] <- x_active.sim$statistic
+  Anosim_Active_Results$Pvalue[i] <- x_active.sim$signif
+  Permanova_Results$PseudoF[i] <- x.nova$aov.tab$F.Model[1]
+  Permanova_Results$Rsqr[i] <- x.nova$aov.tab$R2[1]
+  Permanova_Results$Pvalue[i] <- x.nova$aov.tab$`Pr(>F)`[1]
+  Permanova_Active_Results$PseudoF[i] <- x_active.nova$aov.tab$F.Model[1]
+  Permanova_Active_Results$Rsqr[i] <- x_active.nova$aov.tab$R2[1]
+  Permanova_Active_Results$Pvalue[i] <- x_active.nova$aov.tab$`Pr(>F)`[1]
+}
+
+
+Dis_Anosim_Active_Results
+write.table(file = "Tables/ANOSIM_DisvsIM.txt", x= Dis_Anosim_Active_Results, col.names = TRUE, row.names = FALSE, quote = FALSE, sep="\t")
+
+
+Dis_Permanova_Active_Results
+
+Permanova_Results
+Permanova_Active_Results
+Anosim_Results
+Anosim_Active_Results
+p.adjust(Anosim_Active_Results$Pvalue, method = "fdr")
+
+write.table("Tables/ANOSIM_Active_Timepoint.txt",x = Anosim_Active_Results, sep="\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+adonis(DNA.dist~map_DNA$Disturbance)
+adonis(Active_DNA.dist~map_DNA$Disturbance)
+```
+
+## How different are Active and Total communities?
+### Mantel tests for Active vs Total Communities
+```{r}
+
+Phantom_DNA.dist <- vegdist(t(Phantom_DNA), method = "bray")
+Phantom_DNA.pcoa <- cmdscale(Phantom_DNA.dist, eig=TRUE)
+mantel(Phantom_DNA.dist, Active_DNA.dist)
+protest(Phantom_DNA.pcoa, Active_DNA.pcoa)
+
+
+mantel(Active_DNA.dist, DNA.dist)
+
+mantel(DNA_Control_Active.dist, DNA_Control.dist)
+
+mantel(DNA_Disturbance.dist, DNA_Disturbance_Active.dist)
+
+mantel(DNA_Disturbance_IM_Active.dist, DNA_Disturbance_IM.dist)
+
+mantel(Active_DNA.dist, Reserve_DNA.dist)
+protest(Active_DNA.pcoa, Reserve_DNA.pcoa)
+
+protest(Active_DNA.pcoa, DNA.pcoa)
+
+mantel(DNA.dist, Reserve_DNA.dist)
+protest(DNA.pcoa, Reserve_DNA.pcoa)
+```
+
+
+# Alpha diversity patterns through time 
+
+## Total DNA Richness {.tabset}
+
+```{r}
+Richness <- specnumber(DNA_rare, MARGIN=2)
+map_DNA$Richness <- Richness
+h <- diversity(t(DNA_rare), index = "shannon")
+pielou = h/log(Richness)
+
+map_DNA$Pielou <- pielou
+
+```
+
+### Boxplot Richness
+```{r}
+Rich_Total <- ggplot(map_DNA, aes(y=Richness, x=Week))+
+  geom_boxplot(aes(group=Week, fill=Temperature))+
+  geom_point()+
+  facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space = "free")+
+  ggtitle("Total Community (rRNA gene)")+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  guides(fill=FALSE)+
+  ylim(0,5000)+theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  guides(color=FALSE, fill=FALSE)
+
+map_DNA$Treatments <- factor(map_DNA$Treatments, levels = c("Control", "Disturbance", "Disturbance + Immigration"))
+
+map_DNA_RecoveryStage <- map_DNA[map_DNA$Timepoint>7,]
+map_DNA_RecoveryStage_Control <- map_DNA_RecoveryStage[map_DNA_RecoveryStage$Disturbance=="N",]
+map_DNA_RecoveryStage_NoImmigration <- map_DNA_RecoveryStage[map_DNA_RecoveryStage$DisIm=="Y N",]
+map_DNA_RecoveryStage_Immigration <- map_DNA_RecoveryStage[map_DNA_RecoveryStage$DisIm=="Y Y",]
+
+Rich_Recovery_Control <- ggplot(map_DNA_RecoveryStage_Control, aes(x=Week, y=Richness))+
+                                  geom_boxplot(aes(group=Week))+
+                                  geom_point()+
+                                  xlab(NULL)+
+                                  ylab(NULL)+
+                                  scale_fill_continuous(type= "gradient", low="white", high="red")+
+                                  ylim(0,4500)
+
+Rich_Recovery_NoImmigration <- ggplot(map_DNA_RecoveryStage_NoImmigration, aes(x=Week, y=Richness))+
+                                  geom_boxplot(aes(group=Week))+
+                                  geom_point()+
+                                  xlab(NULL)+
+                                  ylab(NULL)+
+                                  scale_fill_continuous(type= "gradient", low="white", high="red")+
+                                  ylim(0,4500)
+
+Rich_Recovery_Immigration <- ggplot(map_DNA_RecoveryStage_Immigration, aes(x=Week, y=Richness))+
+                                  geom_boxplot(aes(group=Week))+
+                                  geom_point()+
+                                  xlab(NULL)+
+                                  ylab(NULL)+
+                                  scale_fill_continuous(type= "gradient", low="white", high="red")+
+                                  ylim(0,4500)
+
+
+
+
+map_DNA_DisturbedStage <- map_DNA[map_DNA$Timepoint<8,]
+
+map_DNA_DisturbedStage_Control <- map_DNA_DisturbedStage[map_DNA_DisturbedStage$Disturbance=="N",]
+map_DNA_DisturbedStage_Disturbed <- map_DNA_DisturbedStage[map_DNA_DisturbedStage$Disturbance=="Y",]
+
+# Rich_Disturbance_Control <- ggplot(map_DNA_DisturbedStage_Control, aes(x=Week, y=Richness))+
+#                                   geom_boxplot(aes(group=Week), fill="white")+
+#                                   geom_point()+
+#                                   xlab(NULL)+
+#                                   ylab(NULL)+
+#                                   scale_fill_continuous(type= "gradient", low="white", high="red")+
+#                                   ylim(0,4500)
+#                                   
+# Rich_Disturbance_Disturbed <-  ggplot(map_DNA_DisturbedStage_Disturbed, aes(x=Week, y=Richness))+
+#                                   geom_boxplot(aes(group=Week, fill=Temperature))+
+#                                   geom_point()+
+#                                   xlab(NULL)+
+#                                   ylab(NULL)+
+#                                   scale_fill_continuous(type= "gradient", low="white", high="red")+
+#                                   guides(fill=FALSE)+
+#                                   ylim(0,4500)
+#                                   
+# 
+# 
+# plot_grid(ncol=2, plot_grid(Rich_Disturbance_Control, Rich_Disturbance_Disturbed, ncol=1, rel_heights = c(1,2)), plot_grid(Rich_Recovery_Control, Rich_Recovery_NoImmigration, Rich_Recovery_Immigration, ncol=1))
+
+
+
+Richness_DisturbanceStage <- ggplot(map_DNA_DisturbedStage, aes(x=Week, y=Richness,group=interaction(Week,Disturbance), color=Disturbance))+
+  geom_boxplot(outlier.shape=NA, aes(group=interaction(Week,Disturbance), color=Disturbance))+
+  ylim(0,4500)+
+  geom_point(position=position_dodge(width=.75),aes(color=Disturbance,shape=Treatments))+ #pch=1
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_x_continuous(breaks = c(4,5,6,10,14,15,16,20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+
+Fig2_Dis_Legend <- ggplot(map_DNA_DisturbedStage, aes(x=Week, y=Richness,group=interaction(Week,Disturbance), color=Disturbance))+
+  geom_boxplot(aes(group=interaction(Week,Disturbance), color=Disturbance))+
+  ylim(0,4500)+
+  #geom_jitter(width = .2, size=.5)+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_x_continuous(breaks = c(4,5,6,10,14,15,16,20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+Fig2_Dis_Legend_B <- ggplot(map_DNA_DisturbedStage, aes(x=Week, y=Richness,group=interaction(Week,Disturbance), color=Disturbance))+
+  geom_boxplot(aes(group=interaction(Week,Disturbance), color=Disturbance))+
+  ylim(0,4500)+
+  geom_point(position=position_dodge(width=.75),aes(color=Disturbance,shape=Treatments))+
+  #geom_jitter(width = .2, size=.5)+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_x_continuous(breaks = c(4,5,6,10,14,15,16,20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+
+Richness_RecoveryStage <- ggplot(map_DNA_RecoveryStage, aes(x=Week, y=Richness,group=interaction(Week,as.character(Treatments)), color=Treatments))+
+  geom_boxplot(outlier.shape = NA, aes(group=interaction(Week,as.character(Treatments)), color=Treatments))+
+  ylim(0,4500)+
+  geom_point(position=position_dodge(width=15),aes(color=Treatments, shape=Treatments))+
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_x_continuous(breaks = c(20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+Fig2_Rec_legend <- ggplot(map_DNA_RecoveryStage, aes(x=Week, y=Richness,group=interaction(Week,as.character(Treatments)), color=Treatments))+
+  geom_boxplot(aes(group=interaction(Week,as.character(Treatments)), color=Treatments))+
+  ylim(0,4500)+
+  #geom_jitter(width=.2, size=.5)+
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  guides(fill=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  theme(legend.position = "left")
+
+Pielou_DisturbanceStage <- ggplot(map_DNA_DisturbedStage, aes(x=Week, y=Pielou,group=interaction(Week,Disturbance), color=Disturbance))+
+  geom_boxplot(outlier.shape=NA, aes(group=interaction(Week,Disturbance), color=Disturbance))+
+  ylim(0,1)+
+  geom_point(position=position_dodge(width=.75),aes(color=Disturbance, shape=Treatments))+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_x_continuous(breaks = c(4,5,6,10,14,15,16,20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+
+Pielou_RecoveryStage <- ggplot(map_DNA_RecoveryStage, aes(x=Week, y=Pielou,group=interaction(Week,as.character(Treatments)), color=Treatments))+
+  geom_boxplot(aes(group=interaction(Week,as.character(Treatments)), color=Treatments), outlier.shape=NA)+
+  ylim(0,1)+
+  geom_point(position=position_dodge(width=15),aes(color=Treatments, shape=Treatments))+
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_x_continuous(breaks = c(20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+Fig2_top <- plot_grid(ncol=2, Richness_DisturbanceStage, Richness_RecoveryStage, rel_widths = c(1,1) )
+
+Fig2_bot <- plot_grid(ncol=2, Pielou_DisturbanceStage, Pielou_RecoveryStage, rel_widths = c(1,1))
+
+
+y.top.grob <- textGrob("Richness", 
+                   gp=gpar(fontface="bold", col="black", fontsize=12), rot=90)
+y.bot.grob <- textGrob("Pielou's Evenness", 
+                   gp=gpar(fontface="bold", col="black", fontsize=12), rot=90)
+
+Figure2_Top <- grid.arrange(arrangeGrob(Fig2_top, left = y.top.grob))
+Figure2_Bot <- grid.arrange(arrangeGrob(Fig2_bot, left = y.bot.grob))
+
+x.grob <- textGrob("Week", 
+                   gp=gpar(fontface="bold", col="black", fontsize=15))
+Figure2 <- plot_grid(Figure2_Top, Figure2_Bot, ncol=1)
+Figure2 <- grid.arrange(arrangeGrob(Figure2, bottom = x.grob))
+
+Rec_Legend <- get_legend(Fig2_Rec_legend)
+Dis_Legend_B <- get_legend(Fig2_Dis_Legend_B)
+Dis_Legend <- get_legend(Fig2_Dis_Legend)
+
+plot_grid(ncol=1, rel_heights = c(4,1), Figure2, plot_grid(nrow = 1,Dis_Legend, Dis_Legend_B, Rec_Legend))
+
+
+#add to plot
+
+setEPS()
+postscript(file="Figures/Figure2_AlphaDiversity.eps", paper="special", width=6, height = 6, pointsize = 10)
+plot_grid(ncol=1, rel_heights = c(4,1), Figure2, plot_grid(nrow = 1,Dis_Legend, Dis_Legend_B, Rec_Legend, rel_widths = c(1,2,2)))
+dev.off()
+
+```
+
+### Violin Richness
+```{r}
+# ggplot(map_DNA, aes(y=Richness, x=Date))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space = "free")+
+#   ggtitle("DNA Richness")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+## Active DNA Richness {.tabset}
+```{r}
+Richness_Active <- specnumber(Active_DNA, MARGIN=2)
+h_Active <- diversity(t(Active_DNA), index = "shannon")
+pielou_Active = h_Active/log(Richness_Active)
+
+
+map_DNA$ActiveRichness <- Richness_Active
+map_DNA$ActivePielou <- pielou_Active
+
+Rich_B <- ggplot(map_DNA, aes(y=ActiveRichness, x=Week))+
+  geom_boxplot(aes(group=Week, fill=Temperature))+
+  facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space = "free")+
+  ggtitle("Active Community (rRNA:rRNA gene >1)")+
+  ylab(label = "Richness")+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  guides(fill=FALSE)+
+  ylim(0,5000)+theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  guides(color=FALSE, fill=FALSE)
+
+Rich_B
+
+Even_B <- ggplot(map_DNA, aes(y=ActivePielou, x=Week))+
+  geom_boxplot(aes(group=Week, fill=Temperature))+
+  facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space = "free")+
+  ggtitle("Active Community (rRNA:rRNA gene >1)")+
+  ylab(label = "Pielou's Evenness")+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  guides(fill=FALSE)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  guides(color=FALSE, fill=FALSE)
+
+Even_B
+
+```
+
+## Richness Figure Plotting
+
+```{r}
+# Rich_Leg <- ggplot(map_DNA, aes(y=ActiveRichness, x=Date))+
+#   geom_boxplot(aes(group=Date, fill=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space = "free")+
+#   ggtitle("Active Community (rRNA:rRNA gene >1")+
+#   ylab(label = "Richness")+
+#   scale_fill_continuous(type= "gradient", low="white", high="red")
+# 
+# plot_grid(Rich_A, Rich_B, align = "h")
+# 
+# setEPS()
+# postscript("Figures/Richness.eps", width=8, height=5,pointsize=10, paper="special")
+# plot_grid(Rich_A, Rich_B, ncol=2, align = "h")
+# dev.off()
+library(dunn.test)
+map_DNA$Richness
+map_DNA$Disturbance
+# kruskal.test(x=map_DNA$Richness[map_DNA$Timepoint==2], g=as.factor(map_DNA$Disturbance[map_DNA$Timepoint==2]))
+
+# kruskal.test(x=map_DNA$Richness[map_DNA$Timepoint==8&map_DNA$Disturbance=="Y"], g= as.factor(map_DNA$Treatments[map_DNA$Timepoint==8&map_DNA$Disturbance=="Y"]))
+# 
+# kruskal.test(x=map_DNA$Richness[map_DNA$Timepoint==9&map_DNA$Disturbance=="Y"], g= as.factor(map_DNA$Treatments[map_DNA$Timepoint==9&map_DNA$Disturbance=="Y"]))
+
+
+
+
+ktest_Richness_1_7 <- data.frame(Timepoint=c(1:7), TestStatistic = rep(NA,7), Significance = rep(NA,7))
+ktest_Richness_1_7_Dis <- data.frame(Timepoint=c(1:7), TestStatistic = rep(NA,7), Significance = rep(NA,7))
+for(i in 1:7){
+  x_map <- map_DNA[map_DNA$Timepoint==i,]
+  x_map_dis <- map_DNA_Disturbed[map_DNA_Disturbed$Timepoint==i,]
+  ktest <- kruskal.test(x_map$Richness, as.factor(x_map$Disturbance))
+  ktest_dis <- kruskal.test(x_map_dis$Richness, as.factor(x_map_dis$Immigration))
+  ktest_Richness_1_7$TestStatistic[i] <- ktest$statistic
+  ktest_Richness_1_7$Significance[i] <- ktest$p.value
+  ktest_Richness_1_7_Dis$TestStatistic[i] <- ktest_dis$statistic
+  ktest_Richness_1_7_Dis$Significance[i] <- ktest_dis$p.value
+}
+
+write.table(file = "Tables/Richness_DisvsIM.txt", x= ktest_Richness_1_7_Dis, sep = "\t", col.names = TRUE, row.names = FALSE, quote = FALSE)
+
+x_map_Richness_8 <- map_DNA[map_DNA$Timepoint==8,]
+x_map_Richness_9 <- map_DNA[map_DNA$Timepoint==9,]
+
+
+
+
+dunn.test(x_map_Richness_8$Richness, as.factor(x_map_Richness_8$DisIm))
+
+dunn.test(x_map_Richness_9$Richness, as.factor(x_map_Richness_9$DisIm))
+
+
+ktest_Pielou_1_7 <- data.frame(Timepoint=c(1:7), TestStatistic = rep(NA,7), Significance = rep(NA,7))
+for(i in 1:7){
+  x_map <- map_DNA[map_DNA$Timepoint==i,]
+  ktest <- kruskal.test(x_map$Pielou, as.factor(x_map$Disturbance))
+  ktest_Pielou_1_7$TestStatistic[i] <- ktest$statistic
+  ktest_Pielou_1_7$Significance[i] <- ktest$p.value
+}
+
+x_map_Pielou_8 <- map_DNA[map_DNA$Timepoint==8,]
+x_map_Pielou_9 <- map_DNA[map_DNA$Timepoint==9,]
+
+
+
+
+dunn.test(x_map_Pielou_8$Richness, as.factor(x_map_Pielou_8$DisIm))
+
+dunn.test(x_map_Pielou_9$Richness, as.factor(x_map_Pielou_9$DisIm))
+
+ktest_Richness_1_7
+
+```
+
+
+## RNA Richness {.tabset}
+```{r}
+# Richness_RNA <- specnumber(RNA_rare, MARGIN = 2)
+# map_RNA$Richness <- Richness_RNA  
+```
+### Boxplot Richness
+```{r}
+# ggplot(map_RNA, aes(y=Richness, x=Date))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Richness")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+
+```
+
+### Violin Plot Richness
+```{r}
+# ggplot(map_RNA, aes(y=Richness, x=Date))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Richness")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+
+# Activity Measurements
+## Active community via DNA 
+```{r}
+map_DNA$DNA_Percent_Activity <- colSums(Active_DNA)/colSums(DNA_rare)
+map_DNA$DNA_OTU_Activity <- colSums(Active_DNA>0)/ colSums(DNA_rare>0)
+```
+
+### Percent Active Community {.tabset}
+#### Boxplot
+```{r}
+Fig2A <- ggplot(map_DNA, aes(y=DNA_Percent_Activity*100, x=Week))+
+  geom_boxplot(aes(group=Week, fill=Temperature))+
+  geom_point()+
+  facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+  #ggtitle("DNA Percent active Community")+
+  ylim(0,100)+
+  ylab(label = "% Community Active")+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  guides(color=FALSE, fill=FALSE)
+
+Fig2A  
+  
+```
+
+#### Violin plot 
+```{r}
+# ggplot(map_DNA, aes(y=DNA_Percent_Activity, x=Date))+
+#   geom_violin(aes(group=Date, color=Temperature), draw_quantiles = c(0.25, 0.5, 0.75))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("DNA Percent active Community")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+### Percent active OTUs {.tabset}
+#### Boxplot
+```{r}
+Fig2B <- ggplot(map_DNA, aes(y=DNA_OTU_Activity*100, x=Week))+
+  geom_boxplot(aes(group=Week, fill=Temperature))+
+  geom_point()+
+  facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+  #ggtitle("Percent Active OTUs")+
+  ylab(label = "% OTUs Active")+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  ylim(0,100)+
+  #scale_color_viridis_c(option="plasma")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  guides(color=FALSE, fill=FALSE)
+
+Fig2B
+```
+
+
+#### Violin
+```{r}
+# ggplot(map_DNA, aes(y=DNA_OTU_Activity, x=Date))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("DNA Percent active OTUs")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+### Plot Figure 2 Activity 
+```{r}
+Fig2_Leg <- ggplot(map_DNA, aes(y=DNA_OTU_Activity*100, x=Week))+
+  geom_boxplot(aes(group=Week, fill=Temperature))+
+  geom_point()+
+  facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+  #ggtitle("Percent Active OTUs")+
+  ylab(label = "% OTUs Active")+
+  scale_fill_continuous(type= "gradient", low="white", high="red")+
+  #scale_color_viridis_c(option="plasma")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  theme(legend.position = "right", legend.box = "vertical")
+
+Fig2_Legend <- get_legend(Fig2_Leg)
+
+setEPS()
+postscript("Figures/Figure2_2Cols.eps", width=8, height=12,pointsize=10, paper="special")
+plot_grid(Fig2A, Fig2B, align = "h", ncol=2)
+dev.off()
+```
+
+
+## Active community via RNA
+
+```{r}
+# Active_RNA_Community <- colSums(Active_RNA)/colSums(RNA_rare)
+# 
+# Active_RNA_OTUs <- colSums(Active_RNA>0)/ colSums(RNA_rare>0)
+# 
+# map_RNA$RNA_Percent_Activity <- Active_RNA_Community
+# 
+# map_RNA$RNA_OTU_Activity <- Active_RNA_OTUs
+```
+
+### Percent Active Community {.tabset}
+
+#### Boxplot
+```{r}
+
+# ggplot(map_RNA, aes(x=Date, y=RNA_Percent_Activity))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Percent active Community")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+#### Violin
+```{r}  
+# ggplot(map_RNA, aes(x=Date, y=RNA_Percent_Activity))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Percent active Community")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+### Percent Active OTUs {.tabset}
+
+#### Boxplot
+```{r}  
+# ggplot(map_RNA, aes(x=Date, y=RNA_OTU_Activity))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Percent active OTUs")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+#### Violin
+```{r}  
+# ggplot(map_RNA, aes(x=Date, y=RNA_OTU_Activity))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Percent active OTUs")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+# Resistance and Resilience Graphing
+Let's plot the dissimilarity from timepoint 1 for each microcosm throughout the course of the experiment. 
+
+## Calculate and plot DNA Dissimilarity to Timepoint 1 throughout experiment {.tabset}
+```{r}
+library(reshape2)
+InitialSamples <- map_DNA$Sample[map_DNA$Timepoint==1]
+Microcosms <- unique(map_DNA$Microcosm)
+
+mat_DNA <- as.matrix(DNA.dist)
+mat_DNA_Active <- as.matrix(Active_DNA.dist)
+
+long_mat_DNA <- melt(mat_DNA)
+long_mat_DNA_Active <- melt(mat_DNA_Active)
+
+C1_Start <- long_mat_DNA[long_mat_DNA$Var2==InitialSamples[2],]
+
+
+Microcosms_i <- Microcosms[-13]
+Dist_to_T1 <- NULL
+ActiveDist_to_T1 <- NULL
+for(i in 1:length(InitialSamples)){
+  x <- long_mat_DNA[long_mat_DNA$Var2==InitialSamples[i],]
+  x_active <- long_mat_DNA_Active[long_mat_DNA_Active$Var2==InitialSamples[i],]
+  y <- x[map_DNA$Microcosm==Microcosms_i[i],]
+  y_active <- x_active[map_DNA$Microcosm==Microcosms_i[i],]
+  Dist_to_T1 <- rbind(Dist_to_T1, y)
+  ActiveDist_to_T1 <- rbind(ActiveDist_to_T1, y_active)
+}
+
+Dist_to_T1 <- Dist_to_T1[grep("T1", Dist_to_T1$Var2),]
+Dist_to_T1 <- Dist_to_T1[,-2]
+colnames(Dist_to_T1) <- c("Sample", "Distance_to_T1")
+
+map_DNA <- left_join(map_DNA, Dist_to_T1, by="Sample")
+
+ActiveDist_to_T1 <- ActiveDist_to_T1[grep("T1", ActiveDist_to_T1$Var2),]
+ActiveDist_to_T1 <- ActiveDist_to_T1[,-2]
+colnames(ActiveDist_to_T1) <- c("Sample", "ActiveDistance_to_T1")
+
+map_DNA <- left_join(map_DNA, ActiveDist_to_T1, by="Sample")
+
+
+
+```
+
+### Boxplot 
+```{r}
+ggplot(map_DNA, aes(x=Date, y=Distance_to_T1))+
+  geom_boxplot(aes(group=Date, color=Temperature))+
+  geom_jitter(size=.3)+
+  facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+  ggtitle("DNA Dissimilarity to T1")+
+  scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+### Violin
+```{r}
+# ggplot(map_DNA, aes(x=Date, y=Distance_to_T1))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   geom_jitter(size=.3)+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("DNA Dissimilarity to T1")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+## Calculate and plot RNA Dissimilarity to Timepoint 1 throughout experiment {.tabset}
+```{r}
+# library(reshape2)
+# InitialSamples_RNA <- map_RNA$Sample[map_RNA$Timepoint==1]
+# Microcosms_RNA <- unique(map_RNA$Microcosm)
+# mat_RNA <- as.matrix(RNA.dist)
+# 
+# long_mat_RNA <- melt(mat_RNA)
+# 
+# C1_Start_RNA <- long_mat_RNA[long_mat_RNA$Var2==InitialSamples_RNA[2],]
+# 
+# 
+# Microcosms_i_RNA <- Microcosms_RNA[-13]
+# Dist_to_T1_RNA <- NULL
+# for(i in 1:length(InitialSamples_RNA)){
+#   x <- long_mat_RNA[long_mat_RNA$Var2==InitialSamples_RNA[i],]
+#   y <- x[map_RNA$Microcosm==Microcosms_i_RNA[i],]
+#   Dist_to_T1_RNA <- rbind(Dist_to_T1_RNA, y)
+# }
+# 
+# Dist_to_T1_RNA <- Dist_to_T1_RNA[grep("T1", Dist_to_T1_RNA$Var2),]
+# Dist_to_T1_RNA <- Dist_to_T1_RNA[,-2]
+# colnames(Dist_to_T1_RNA) <- c("Sample", "Distance_to_T1_RNA")
+# 
+# map_RNA <- left_join(map_RNA, Dist_to_T1_RNA, by="Sample")
+
+```
+
+### Boxplot 
+```{r}
+# ggplot(map_RNA, aes(x=Date, y=Distance_to_T1_RNA))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   geom_jitter(size=.3)+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Dissimilarity to T1")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+### Violin
+```{r}
+# ggplot(map_RNA, aes(x=Date, y=Distance_to_T1_RNA))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   geom_jitter(size=.3)+
+#   facet_grid(rows=vars(Treatments), cols=vars(Stage), scales="free_x", space="free")+
+#   ggtitle("RNA Dissimilarity to T1")+
+#   scale_color_gradientn(colours = GnYlOrRd(5))
+
+```
+
+
+## Resistance/Resilience line graph
+```{r}
+map_DNA$BC_Similarity_T1 <- 1-map_DNA$Distance_to_T1
+
+
+ggplot(map_DNA, aes(x=Week, y=BC_Similarity_T1, group=Microcosm, color=Treatments)) +
+  geom_path()+
+  geom_point()
+
+```
+
+```{r}
+map_DNA$ActiveSimilarity_to_T1 <- 1- map_DNA$ActiveDistance_to_T1
+
+Fig3 <- ggplot(map_DNA, aes(x=Week, y=ActiveSimilarity_to_T1, group=Microcosm, color=Treatments, linetype=Treatments))+
+  #geom_line()+
+  geom_point(aes(shape=Treatments), size=3)+ #color="black"
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  #scale_color_viridis_d(option="plasma")+
+  #ylab(label = "Bray Curtis Similarity to Timepoint 1")+
+  ylab(NULL)+
+  scale_shape_manual(values = c(21,22,24))+
+  theme(legend.position = "bottom")+
+  stat_summary(aes(group=Treatments), fun.y=mean, geom="line")+
+  guides(color=FALSE, shape=FALSE, linetype=FALSE)+
+  scale_x_continuous(breaks=c(4,5,6,10,14,15,16,20,45))+
+  theme(axis.text.x = element_text(size = 7), axis.title.x = element_blank())
+
+Fig3
+
+ggsave("Figures/Figure3.eps", Fig3, device = "eps", width=8, height=4, units = "in")
+```
+
+# Resistance Calculation 
+Calculate resistance based on BC similarity at timepoint 4 (this was the point of highest dissimilarity for active communities)
+
+```{r}
+T4_map_DNA <- map_DNA[map_DNA$Timepoint==4,]
+T4_map_DNA_Disturbed <- T4_map_DNA[T4_map_DNA$Disturbance=="Y",]
+
+
+y0_T4 <-  mean(T4_map_DNA$ActiveSimilarity_to_T1[T4_map_DNA$Disturbance=="N"])
+
+yl_T4 <- T4_map_DNA_Disturbed$ActiveSimilarity_to_T1
+
+T4_map_DNA_Disturbed$ActiveResistance <- 1- ((2*abs(y0_T4-yl_T4))/(y0_T4+abs(y0_T4 + yl_T4)))
+
+RS_plot <- ggplot(T4_map_DNA_Disturbed, aes(x=Disturbance, y=ActiveResistance))+
+  geom_boxplot()+
+  geom_point()+
+  ylab(label = NULL)+
+  xlab(label = NULL)+
+  theme_bw()+
+  scale_x_discrete(breaks="Y",labels=c("Week 10"))+
+  theme(axis.text.x = element_text(size=20))
+#ggtitle(label = "Resistance at\nWeek 10") 
+
+RS_plot
+
+ggsave(filename = "Figures/Resistance.eps", RS_plot, width = 1.5, height = 2.5, device = "eps", units = "in")
+```
+
+# Reslience/Recovery Calculation
+
+## Total Reslience (Week 16 to Week 45)
+```{r}
+T7_map_DNA <- map_DNA[map_DNA$Timepoint==7,]
+T9_map_DNA <- map_DNA[map_DNA$Timepoint==9,]
+
+
+T7T9_map_DNA <- T7_map_DNA[T7_map_DNA$Microcosm%in%T9_map_DNA$Microcosm,]
+
+T7T9_map_DNA_Disturbed <- T7T9_map_DNA[T7T9_map_DNA$Disturbance=="Y",]
+T9_map_DNA_Disturbed <- T9_map_DNA[T9_map_DNA$Disturbance=="Y",]
+
+
+yn_1645 <- T9_map_DNA_Disturbed$ActiveSimilarity_to_T1
+yl_1645 <- T7T9_map_DNA_Disturbed$ActiveSimilarity_to_T1
+y0l_1645 <- mean(T7T9_map_DNA$ActiveSimilarity_to_T1[T7_map_DNA$Disturbance=="N"])
+y0n_1645 <- mean(T9_map_DNA$ActiveSimilarity_to_T1[T9_map_DNA$Disturbance=="N"])
+
+#Recovery <- ((2*abs(y0-yl))/(abs(y0-yl)+abs(y0-yn))) - 1
+
+Recovery_1645 <- (2*abs(y0l_1645-yl_1645)/(abs(y0l_1645-yl_1645)+abs(y0n_1645-yn_1645)))-1
+
+
+Recovery_1645.df <- data.frame(Microsm= T7T9_map_DNA_Disturbed$Microcosm, Treatments= T7T9_map_DNA_Disturbed$Treatments, Recovery=Recovery_1645)
+
+RL_1645_plot <- ggplot(Recovery_1645.df, aes(x=Treatments, y=Recovery_1645))+
+  geom_boxplot(aes(group=Treatments, color=Treatments))+
+  geom_point()+
+  ylab(label = NULL)+
+  xlab(label = NULL)+
+  #ggtitle(label = "Total Resilience\n(Week 16 to Week 45)")+
+  scale_x_discrete(breaks=c("Disturbance","Disturbance + Immigration"),
+        labels=c("-","+"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(size=20), plot.title = element_text(size=8))+
+  ylim(0,.5)+
+  scale_color_manual(values = c("#0072B2","#CC79A7"))+
+  guides(color=FALSE)
+
+RL_1645_plot
+```
+
+## Initial Reslience (Week 16 to Week 20)
+```{r}
+
+T7_map_DNA <- map_DNA[map_DNA$Timepoint==7,]
+T8_map_DNA <- map_DNA[map_DNA$Timepoint==8,]
+
+
+T7T8_map_DNA <- T7_map_DNA[T7_map_DNA$Microcosm%in%T8_map_DNA$Microcosm,]
+
+T7T8_map_DNA_Disturbed <- T7T8_map_DNA[T7T8_map_DNA$Disturbance=="Y",]
+T8_map_DNA_Disturbed <- T8_map_DNA[T8_map_DNA$Disturbance=="Y",]
+
+
+yn_1620 <- T8_map_DNA_Disturbed$ActiveSimilarity_to_T1
+yl_1620 <- T7T8_map_DNA_Disturbed$ActiveSimilarity_to_T1
+y0l_1620 <- mean(T7T8_map_DNA$ActiveSimilarity_to_T1[T7T8_map_DNA$Disturbance=="N"])
+y0n_1620 <- mean(T8_map_DNA$ActiveSimilarity_to_T1[T8_map_DNA$Disturbance=="N"])
+
+
+Recovery_1620 <- (2*abs(y0l_1620-yl_1620)/(abs(y0l_1620-yl_1620)+abs(y0n_1620-yn_1620)))-1
+
+
+Recovery_1620.df <- data.frame(Microsm= T7T8_map_DNA_Disturbed$Microcosm, Treatments= T7T8_map_DNA_Disturbed$Treatments, Recovery=Recovery_1620)
+
+RL_1620_plot <- ggplot(Recovery_1620.df, aes(x=Treatments, y=Recovery_1620))+
+  geom_boxplot(aes(group=Treatments, color=Treatments))+
+  geom_point()+
+  ylab(label = NULL)+
+  xlab(label = NULL)+
+  #ggtitle(label = "Initial Resilience\n(Week 16 to Week 20)")+
+  scale_x_discrete(breaks=c("Disturbance","Disturbance + Immigration"),
+        labels=c("-","+"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(size=20), plot.title = element_text(size=8))+
+  ylim(0,.5)+
+  scale_color_manual(values = c("#0072B2","#CC79A7"))+
+  guides(color=FALSE)
+
+ 
+RL_1620_plot
+```
+
+## Secondary Reslience (Week 20 to Week 45)
+
+```{r}
+T8_map_DNA <- map_DNA[map_DNA$Timepoint==8,]
+T9_map_DNA <- map_DNA[map_DNA$Timepoint==9,]
+
+
+T8T9_map_DNA <- T8_map_DNA[T8_map_DNA$Microcosm%in%T9_map_DNA$Microcosm,]
+T9T8_map_DNA <- T9_map_DNA[T9_map_DNA$Microcosm%in%T8_map_DNA$Microcosm,]
+
+
+T8T9_map_DNA_Disturbed <- T8T9_map_DNA[T8T9_map_DNA$Disturbance=="Y",]
+T9T8_map_DNA_Disturbed <- T9T8_map_DNA[T9T8_map_DNA$Disturbance=="Y",]
+
+
+yn_2045 <- T9T8_map_DNA_Disturbed$ActiveSimilarity_to_T1
+yl_2045 <- T8T9_map_DNA_Disturbed$ActiveSimilarity_to_T1
+y0l_2045 <- mean(T8T9_map_DNA$ActiveSimilarity_to_T1[T8T9_map_DNA$Disturbance=="N"])
+y0n_2045 <- mean(T9T8_map_DNA$ActiveSimilarity_to_T1[T9T8_map_DNA$Disturbance=="N"])
+
+#Recovery <- ((2*abs(y0-yl))/(abs(y0-yl)+abs(y0-yn))) - 1
+
+Recovery_2045 <- (2*abs(y0l_2045-yl_2045)/(abs(y0l_2045-yl_2045)+abs(y0n_2045-yn_2045)))-1
+
+
+Recovery_2045.df <- data.frame(Microsm= T8T9_map_DNA_Disturbed$Microcosm, Treatments= T8T9_map_DNA_Disturbed$Treatments, Recovery=Recovery_2045)
+
+RL_2045_plot <- ggplot(Recovery_2045.df, aes(x=Treatments, y=Recovery_2045))+
+  geom_boxplot(aes(group=Treatments, color=Treatments))+
+  geom_point()+
+  ylab(label = NULL)+
+  xlab(label = NULL)+
+  #ggtitle(label = "Long-Term Resilience\n(Week 20 to Week 45)")+
+  scale_x_discrete(breaks=c("Disturbance","Disturbance + Immigration"),
+        labels=c("-","+"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(size=20), plot.title = element_text(size=8))+
+  ylim(0,.5)+
+  scale_color_manual(values = c("#0072B2","#CC79A7"))+
+  guides(color=FALSE)
+
+RL_2045_plot
+```
+
+## Plotting Reslience Panels
+```{r}
+#create common x and y labels
+
+y.grob <- textGrob("Resilience", 
+                   gp=gpar(col="black", fontsize=8), rot=90)
+
+x.grob <- textGrob("Immigration", 
+                   gp=gpar(col="black", fontsize=8))
+RL_Plot <- plot_grid(RL_1645_plot, plot_grid(RL_1620_plot, RL_2045_plot, ncol = 1), ncol = 2)
+
+setEPS()
+postscript("Figures/Resilience.eps", width=3, height=5,pointsize=10, paper="special")
+grid.arrange(arrangeGrob(RL_Plot, left=y.grob, bottom=x.grob))
+dev.off()
+
+setEPS()
+postscript("Figures/Figure6_RS_RL_Panel.eps", width=8, height=5,pointsize=10, paper="special")
+plot_grid(ncol=1, plot_grid(Fig3, RS_plot, ncol=2, rel_widths = c(1.85,1)), plot_grid(RL_1645_plot, RL_1620_plot, RL_2045_plot, ncol=3))
+dev.off()
+```
+
+## Resilience Kruskal-Wallis Rank Sum test
+Since we have uneven sample sizes for each of these, we will use Kruskal-Wallis test to assess differences in Resilience across immigration vs non immigrations. 
+```{r}
+
+ktest_1645 <- kruskal.test(Recovery_1645.df$Recovery, Recovery_1645.df$Treatments)
+ktest_1620 <- kruskal.test(Recovery_1620.df$Recovery, Recovery_1620.df$Treatments)
+ktest_2045 <- kruskal.test(Recovery_2045.df$Recovery, Recovery_2045.df$Treatments)
+
+ktest_1645$statistic
+ktest_pvalues <- c(ktest_1645$p.value, ktest_1620$p.value, ktest_2045$p.value)
+ktest_statistics <- c(ktest_1645$statistic, ktest_1620$statistic, ktest_2045$statistic)
+
+ktest_DisturbanceNum <- c(2, 4, 1)
+ktest_ImmigrationNum <- c(3, 3, 3)
+
+RL.kw.results <- data.frame(RecoveryPeriod= c("Week 16 to Week 45", "Week 16 to Week 20", "Week 20 to Week 45"), KW_Chi_Squared = ktest_statistics, Pvalue = ktest_pvalues, NoImmigration = ktest_DisturbanceNum, Immigration = ktest_ImmigrationNum)
+
+
+
+write.table(file = "Tables/Resilience_KWtest.txt", x=RL.kw.results, sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+```
+
+
+# Calculating and Plotting the contribution of Responsive and Sensitive Taxa to bray curtis dissimilarity to T1
+We go through and define a responsive and sensitive set of OTUs by using the disturbed microcosms. "Responsive" taxa start with  mean RNA/DNA ratios <1 in disturbance microcosms and attain mean RNA/DNA ratios >1 in hot microcosms (>14C). "Sensitive" taxa start with mean RNA/DNA ratios >1 in disturbance microcosms and attain mean RNA/DNA ratios <1 in hot microcosms/timepoints (>14C). 
+
+```{r}
+
+# colnames(Ratio)==map_RNA$Sample
+# Ratio_Control <- Ratio[,map_RNA$Disturbance=="N"]
+# 
+# Ratio_Disturbance <- Ratio[,map_RNA$Disturbance=="Y"]
+# 
+# map_RNA_Disturbance <- map_RNA[map_RNA$Disturbance=="Y",]
+# 
+# ## Subsetting to taxa that have RNA/DNA ratios >1 at timepoint 1
+# Initial_Active <- Ratio_Disturbance[rowMeans(Ratio_Disturbance[,map_RNA_Disturbance$Timepoint==1])>1,]
+# # Subsetting to taxa that have RNA/DNA ratios <1 at timepoint 1
+# Initial_Dormant <- Ratio_Disturbance[rowMeans(Ratio_Disturbance[,map_RNA_Disturbance$Timepoint==1])<1,]
+# 
+# # Subsetting initial dormant taxa to those that have mean RNA/DNA ratios >1 in high temperature timepoints/microcosms
+# Temperature_Responsive <- Initial_Dormant[rowMeans(Initial_Dormant[,map_RNA_Disturbance$Temperature>15])>1,]
+# # Subsetting initial active taxa to those that have mean RNA/DNA ratios <1 in high temperature timepoints/microcosms
+# Temperature_Sensitive <- Initial_Active[rowMeans(Initial_Active[,map_RNA_Disturbance$Temperature>15])<1,]
+# 
+# 
+# Temp_Responsive_OTUs <- row.names(Temperature_Responsive)
+# Temp_Sensitive_OTUs <- row.names(Temperature_Sensitive)
+# 
+# Responsive_RNA <- RNA_rare[row.names(RNA_rare)%in%Temp_Responsive_OTUs,]
+# Responsive_DNA <- DNA_rare[row.names(DNA_rare)%in%Temp_Responsive_OTUs,]
+# 
+# Sensitive_RNA <- RNA_rare[row.names(RNA_rare)%in%Temp_Sensitive_OTUs,]
+# Sensitive_DNA <- DNA_rare[row.names(DNA_rare)%in%Temp_Sensitive_OTUs,] 
+```
+
+## DNA Analyses 
+### Responsive Taxa {.tabset}
+```{r}
+# Responsive_Dissimilarity <- data.frame(Micro1= rep(NA, nrow(map_DNA)), Micro2= rep(NA, nrow(map_DNA)), Responsive_BC_Dis = rep(NA, nrow(map_DNA)))
+# 
+# for(i in 1:length(Microcosms)){
+#   x <- DNA_rare[,map_DNA$Microcosm==Microcosms[i]]
+#   x.responsive <- Responsive_DNA[,map_DNA$Microcosm==Microcosms[i]]
+#   x.responsive.bc <- rep(NA, ncol(x.responsive))
+#   for(e in 1:ncol(x)){
+#     x.responsive.bc[e] <- sum(abs(x.responsive[,1]-x.responsive[,e]))/(sum(x[,1])+sum(x[,e]))
+#   }
+#   Responsive_Dissimilarity$Responsive_BC_Dis[map_DNA$Microcosm==Microcosms[i]] <- x.responsive.bc
+#   Responsive_Dissimilarity$Micro1[map_DNA$Microcosm==Microcosms[i]] <-colnames(x.responsive)[1]
+#   Responsive_Dissimilarity$Micro2[map_DNA$Microcosm==Microcosms[i]] <- colnames(x.responsive)
+# }
+# 
+# Responsive_Dissimilarity <- Responsive_Dissimilarity[grep("T1", Responsive_Dissimilarity$Micro1),]
+# Responsive_Dissimilarity <- Responsive_Dissimilarity[,-1]
+# 
+# colnames(Responsive_Dissimilarity) <- c("Sample", "Responsive_BC_Dissimilarity")
+# 
+# map_DNA <- left_join(map_DNA, Responsive_Dissimilarity, by="Sample")
+# 
+# map_DNA$Percent_Responsive_BC <- map_DNA$Responsive_BC_Dissimilarity/map_DNA$Distance_to_T1
+```
+
+#### Boxplot
+```{r}
+# ggplot(map_DNA, aes(x=Date, y=Percent_Responsive_BC))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Responsive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+#### Violin
+```{r}
+# ggplot(map_DNA, aes(x=Date, y=Percent_Responsive_BC))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Responsive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+### Sensitive Taxa {.tabset}
+```{r}
+# Sensitive_Dissimilarity <- data.frame(Micro1= rep(NA, nrow(map_DNA)), Micro2= rep(NA, nrow(map_DNA)), Sensitive_BC_Dis = rep(NA, nrow(map_DNA)))
+# 
+# 
+# for(i in 1:length(Microcosms)){
+#   x <- DNA_rare[,map_DNA$Microcosm==Microcosms[i]]
+#   x.sensitive <- Sensitive_DNA[,map_DNA$Microcosm==Microcosms[i]]
+#   x.sensitive.bc <- rep(NA, ncol(x.sensitive))
+#   for(e in 1:ncol(x)){
+#     x.sensitive.bc[e] <- sum(abs(x.sensitive[,1]-x.sensitive[,e]))/(sum(x[,1])+sum(x[,e]))
+#   }
+#   Sensitive_Dissimilarity$Sensitive_BC_Dis[map_DNA$Microcosm==Microcosms[i]] <- x.sensitive.bc
+#   Sensitive_Dissimilarity$Micro1[map_DNA$Microcosm==Microcosms[i]] <-colnames(x.sensitive)[1]
+#   Sensitive_Dissimilarity$Micro2[map_DNA$Microcosm==Microcosms[i]] <- colnames(x.sensitive)
+# }
+# 
+# Sensitive_Dissimilarity <- Sensitive_Dissimilarity[grep("T1", Sensitive_Dissimilarity$Micro1),]
+# Sensitive_Dissimilarity <- Sensitive_Dissimilarity[,-1]
+# 
+# colnames(Sensitive_Dissimilarity) <- c("Sample", "Sensitive_BC_Dissimilarity")
+# 
+# map_DNA <- left_join(map_DNA, Sensitive_Dissimilarity, by="Sample")
+# 
+# map_DNA$Percent_Sensitive_BC <- map_DNA$Sensitive_BC_Dissimilarity/map_DNA$Distance_to_T1
+```
+#### Boxplot
+```{r}
+# ggplot(map_DNA, aes(x=Date, y=Percent_Sensitive_BC))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Sensitive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+#### Violin
+```{r}
+# ggplot(map_DNA, aes(x=Date, y=Percent_Sensitive_BC))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Sensitive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+## RNA Analyses 
+### Responsive Taxa {.tabset}
+```{r}
+# Responsive_Dissimilarity_RNA <- data.frame(Micro1= rep(NA, nrow(map_RNA)), Micro2= rep(NA, nrow(map_RNA)), Responsive_BC_Dis_RNA = rep(NA, nrow(map_RNA)))
+# 
+# for(i in 1:length(Microcosms)){
+#   x <- RNA_rare[,map_RNA$Microcosm==Microcosms[i]]
+#   x.responsive <- Responsive_RNA[,map_RNA$Microcosm==Microcosms[i]]
+#   x.responsive.bc <- rep(NA, ncol(x.responsive))
+#   for(e in 1:ncol(x)){
+#     x.responsive.bc[e] <- sum(abs(x.responsive[,1]-x.responsive[,e]))/(sum(x[,1])+sum(x[,e]))
+#   }
+#   Responsive_Dissimilarity_RNA$Responsive_BC_Dis_RNA[map_RNA$Microcosm==Microcosms[i]] <- x.responsive.bc
+#   Responsive_Dissimilarity_RNA$Micro1[map_RNA$Microcosm==Microcosms[i]] <-colnames(x.responsive)[1]
+#   Responsive_Dissimilarity_RNA$Micro2[map_RNA$Microcosm==Microcosms[i]] <- colnames(x.responsive)
+# }
+# 
+# Responsive_Dissimilarity_RNA <- Responsive_Dissimilarity_RNA[grep("T1", Responsive_Dissimilarity_RNA$Micro1),]
+# Responsive_Dissimilarity_RNA <- Responsive_Dissimilarity_RNA[,-1]
+# 
+# colnames(Responsive_Dissimilarity_RNA) <- c("Sample", "Responsive_BC_Dissimilarity")
+# 
+# map_RNA <- left_join(map_RNA, Responsive_Dissimilarity_RNA, by="Sample")
+# 
+# map_RNA$Percent_Responsive_BC <- map_RNA$Responsive_BC_Dissimilarity/map_RNA$Distance_to_T1_RNA
+```
+
+#### Boxplot
+```{r}
+# ggplot(map_RNA, aes(x=Date, y=Percent_Responsive_BC))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Responsive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+#### Violin
+```{r}
+# ggplot(map_RNA, aes(x=Date, y=Percent_Responsive_BC))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Responsive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+### Sensitive Taxa {.tabset}
+```{r}
+# Sensitive_Dissimilarity_RNA <- data.frame(Micro1= rep(NA, nrow(map_RNA)), Micro2= rep(NA, nrow(map_RNA)), Sensitive_BC_Dis_RNA = rep(NA, nrow(map_RNA)))
+# 
+# 
+# for(i in 1:length(Microcosms)){
+#   x <- RNA_rare[,map_RNA$Microcosm==Microcosms[i]]
+#   x.sensitive <- Sensitive_RNA[,map_RNA$Microcosm==Microcosms[i]]
+#   x.sensitive.bc <- rep(NA, ncol(x.sensitive))
+#   for(e in 1:ncol(x)){
+#     x.sensitive.bc[e] <- sum(abs(x.sensitive[,1]-x.sensitive[,e]))/(sum(x[,1])+sum(x[,e]))
+#   }
+#   Sensitive_Dissimilarity_RNA$Sensitive_BC_Dis_RNA[map_DNA$Microcosm==Microcosms[i]] <- x.sensitive.bc
+#   Sensitive_Dissimilarity_RNA$Micro1[map_RNA$Microcosm==Microcosms[i]] <-colnames(x.sensitive)[1]
+#   Sensitive_Dissimilarity_RNA$Micro2[map_RNA$Microcosm==Microcosms[i]] <- colnames(x.sensitive)
+# }
+# 
+# Sensitive_Dissimilarity_RNA <- Sensitive_Dissimilarity_RNA[grep("T1", Sensitive_Dissimilarity_RNA$Micro1),]
+# Sensitive_Dissimilarity_RNA <- Sensitive_Dissimilarity_RNA[,-1]
+# 
+# colnames(Sensitive_Dissimilarity_RNA) <- c("Sample", "Sensitive_BC_Dissimilarity")
+# 
+# map_RNA <- left_join(map_RNA, Sensitive_Dissimilarity_RNA, by="Sample")
+# 
+# map_RNA$Percent_Sensitive_BC <- map_RNA$Sensitive_BC_Dissimilarity/map_RNA$Distance_to_T1_RNA
+```
+#### Boxplot
+```{r}
+# ggplot(map_RNA, aes(x=Date, y=Percent_Sensitive_BC))+
+#   geom_boxplot(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Sensitive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+#### Violin
+```{r}
+# ggplot(map_RNA, aes(x=Date, y=Percent_Sensitive_BC))+
+#   geom_violin(aes(group=Date, color=Temperature))+
+#   facet_grid(rows=vars(Treatments), cols =vars(Stage), scales = "free_x", space="free")+
+#   xlab("Date")+
+#   ylab("Sensitive Taxa Contribution to BC Dissimilarity to T1")
+```
+
+
+
+```{r, message=FALSE}
+# Active_Dissimilarity <- data.frame(Micro1= rep(NA, nrow(map_DNA)), Micro2= rep(NA, nrow(map_DNA)), Active_BC_Dis = rep(NA, nrow(map_DNA)))
+# for(i in 1:length(Microcosms)){
+#   x <- DNA_rare[,map_DNA$Microcosm==Microcosms[i]]
+#   x.active <- Active_DNA[,map_DNA$Microcosm==Microcosms[i]]
+#   x.active.bc <- rep(NA, ncol(x.active))
+#   for(e in 1:ncol(x)){
+#     x.active.bc[e] <- sum(abs(x.active[,1]-x.active[,e]))/(sum(x[,1])+sum(x[,e]))
+#   }
+#   Active_Dissimilarity$Active_BC_Dis[map_DNA$Microcosm==Microcosms[i]] <- x.active.bc
+#   Active_Dissimilarity$Micro1[map_DNA$Microcosm==Microcosms[i]] <-colnames(x.active)[1]
+#   Active_Dissimilarity$Micro2[map_DNA$Microcosm==Microcosms[i]] <- colnames(x.active)
+# }
+# 
+# Active_Dissimilarity <- Active_Dissimilarity[grep("T1", Active_Dissimilarity$Micro1),]
+# Active_Dissimilarity <- Active_Dissimilarity[,-1]
+# 
+# colnames(Active_Dissimilarity) <- c("Sample", "Active_BC_Dissimilarity")
+# 
+# map_DNA <- left_join(map_DNA, Active_Dissimilarity, by="Sample")
+# 
+# map_DNA$Percent_Active_BC <- map_DNA$Active_BC_Dissimilarity/map_DNA$Distance_to_T1
+# 
+# ggplot(map_DNA, aes(x=Date, y=Percent_Active_BC))+
+#   geom_violin(aes(group=Date))+
+#   facet_wrap(~Treatments, nrow=3)+
+#   geom_jitter(size=.2)
+# 
+# ggplot(map_DNA, aes(x=Date, y=Percent_Active_BC))+
+#   geom_boxplot(aes(group=Date, fill=Temperature))+
+#   facet_wrap(~Treatments, nrow=3)+
+#   geom_jitter(size=.2)
+
+```
+# Taxonomy
+```{r}
+taxonomy <- read_csv("InputFiles/Taxonomy.csv", col_names = TRUE)
+
+Taxonomy_Cleaned <- gsub("\\(......\\)", "", taxonomy$Domain)
+
+Taxonomy_Cleaned <- data.frame(OTU= taxonomy$OTU)
+Taxonomy_Cleaned$Domain <- gsub("\\(......\\)", "", taxonomy$Domain)
+Taxonomy_Cleaned$Phylum <- gsub("\\(......\\)", "", taxonomy$Phylum)
+Taxonomy_Cleaned$Class <- gsub("\\(......\\)", "", taxonomy$Class)
+Taxonomy_Cleaned$Order <- gsub("\\(......\\)", "", taxonomy$Order)
+Taxonomy_Cleaned$Family <- gsub("\\(......\\)", "", taxonomy$Family)
+Taxonomy_Cleaned$Genus <- gsub("\\(......\\)", "", taxonomy$Genus)
+Taxonomy_Cleaned$Species <- gsub("\\(......\\)", "", taxonomy$Species)
+
+FinestResolved <- data.frame(OTU = Taxonomy_Cleaned$OTU, Taxonomy = NA)
+
+for (i in 1: nrow(Taxonomy_Cleaned)){
+  FinestResolved$Taxonomy[i] <- Taxonomy_Cleaned[i,8-sum(is.na(Taxonomy_Cleaned[i,]))]
+}
+```
+
+
+
+# Heatmaps
+```{r}
+
+library(gplots)
+
+Abundant_Active <- Active_DNA[order(rowSums(Active_DNA), decreasing = TRUE),]
+
+Abundant_Active <- Abundant_Active[c(1:100),]
+# Abundant_Active <- Abundant_Active[c(1:50),]
+
+
+Total_abundant <- DNA_rare[rownames(DNA_rare)%in%rownames(Abundant_Active),]
+
+Abundant_Active_Disturbed <- Abundant_Active[,map_DNA$Disturbance=="Y"]
+
+ Total_abundant_Disturbed <- Total_abundant[,map_DNA$Disturbance=="Y"]
+
+# Abundant_Active_Disturbed_1_7 <- Abundant_Active[,map_DNA$Disturbance=="Y"&map_DNA$Timepoint<8] 
+# Abundant_Active_Disturbed_8_9 <- Abundant_Active[,map_DNA$Disturbance=="Y"&map_DNA$Timepoint>7]
+
+# t_AAD_1_7 <- as.data.frame(t(Abundant_Active_Disturbed_1_7))
+# t_AAD_8_9 <-  as.data.frame(t(Abundant_Active_Disturbed_8_9))
+# 
+# t_AAD_1_7$Sample <- row.names(t_AAD_1_7)
+# t_AAD_8_9$Sample <- row.names(t_AAD_8_9)
+# 
+# t_AAD
+
+ 
+t_AAD <- t(Abundant_Active_Disturbed)
+t_AAD <- as.data.frame(t_AAD)
+
+ t_TAD <- t(Total_abundant_Disturbed)
+ t_TAD <- as.data.frame(t_TAD)
+
+
+t_AAD$Sample <- row.names(t_AAD)
+t_TAD$Sample <- row.names(t_TAD)
+
+Sample_Timepoints <- data.frame(Sample=map_DNA$Sample, Timepoint=map_DNA$Timepoint, Immigration=map_DNA$Immigration)
+
+t_TAD <- left_join(t_TAD, Sample_Timepoints, by="Sample")
+t_AAD <- left_join(t_AAD, Sample_Timepoints, by="Sample")
+
+t_TAD <- t_TAD[,-101]
+t_AAD <- t_AAD[,-101]
+# 
+# t_TAD <- t_TAD[,-51]
+# t_AAD <- t_AAD[,-51]
+
+t_AAD_1_7 <- t_AAD[t_AAD$Timepoint<8,]
+
+t_AAD_8_9 <- t_AAD[t_AAD$Timepoint>7,]
+
+t_TAD_1_7 <- t_TAD[t_TAD$Timepoint<8,]
+
+t_TAD_8_9 <- t_TAD[t_TAD$Timepoint>7,]
+
+ t_TAD_collapsed_1_7 <- t_TAD_1_7 %>% 
+   group_by(Timepoint) %>%
+   summarise_all(funs(mean))
+ 
+ t_TAD_collapsed_8_9 <- t_TAD_8_9 %>% 
+   group_by(Timepoint,Immigration) %>%
+   summarise_all(funs(mean))
+
+
+t_AAD_collapsed <- t_AAD %>%
+  group_by(Timepoint) %>%
+  summarise_all(funs(mean))
+
+t_AAD_collapsed_1_7 <- t_AAD_1_7 %>%
+  group_by(Timepoint) %>%
+  summarise_all(funs(mean))
+
+t_AAD_collapsed_8_9 <- t_AAD_8_9 %>%
+  group_by(Timepoint,Immigration) %>%
+  summarise_all(funs(mean))
+
+t_AAD_collapsed_8_9 <- t_AAD_collapsed_8_9[,-1]
+t_AAD_collapsed_8_9 <- t_AAD_collapsed_8_9[,-1]
+AAD_collapsed_8_9 <- as.data.frame(t(t_AAD_collapsed_8_9))
+colnames(AAD_collapsed_8_9) <- c("Week20_-", "Week20_+", "Week45_-", "Week45_+")
+
+
+t_AAD_collapsed_1_7 <- t_AAD_collapsed_1_7[,-1]
+t_AAD_collapsed_1_7 <- t_AAD_collapsed_1_7[,-101]
+AAD_collapsed_1_7 <- as.data.frame(t(t_AAD_collapsed_1_7))
+
+colnames(AAD_collapsed_1_7) <- c("Week4", "Week5", "Week6", "Week10", "Week14", "Week15", "Week16")
+
+AAD_Collapsed_Immigration <- cbind(AAD_collapsed_1_7, AAD_collapsed_8_9)
+AAD_Collapsed_Immigration_mat <- as.matrix(AAD_Collapsed_Immigration)
+
+
+t_TAD_collapsed_8_9 <- t_TAD_collapsed_8_9[,-1]
+t_TAD_collapsed_8_9 <- t_TAD_collapsed_8_9[,-1]
+TAD_collapsed_8_9 <- as.data.frame(t(t_TAD_collapsed_8_9))
+colnames(TAD_collapsed_8_9) <- c("Week20_-", "Week20_+", "Week45_-", "Week45_+")
+
+
+t_TAD_collapsed_1_7 <- t_TAD_collapsed_1_7[,-1]
+t_TAD_collapsed_1_7 <- t_TAD_collapsed_1_7[,-101]
+TAD_collapsed_1_7 <- as.data.frame(t(t_TAD_collapsed_1_7))
+
+colnames(TAD_collapsed_1_7) <- c("Week4", "Week5", "Week6", "Week10", "Week14", "Week15", "Week16")
+
+TAD_Collapsed_Immigration <- cbind(TAD_collapsed_1_7, TAD_collapsed_8_9)
+TAD_Collapsed_Immigration_mat <- as.matrix(TAD_Collapsed_Immigration)
+
+
+
+#t_TAD_collapsed <- t_TAD_collapsed[,-1]
+t_AAD_collapsed <- t_AAD_collapsed[,-1]
+
+#TAD_collapsed <- as.data.frame(t(t_TAD_collapsed))
+AAD_collapsed <- as.data.frame(t(t_AAD_collapsed))
+
+#colnames(TAD_collapsed) <- c(1:9)
+colnames(AAD_collapsed) <- c(1:9)
+
+AAD_collapsed_mat <- as.matrix(AAD_collapsed)
+#TAD_collapsed_mat <- as.matrix(TAD_collapsed)
+
+
+#heatmap.2(AAD_collapsed_mat, dendrogram = "row", trace="none", Colv = FALSE)
+#heatmap.2(TAD_collapsed_mat, dendrogram = "row", trace="none", Colv= FALSE)
+
+#AAD_collapsed.zs <- decostand(x=AAD_collapsed_mat, method = "standardize", MARGIN=1)
+#TAD_collapsed.zs <- decostand(x=TAD_collapsed_mat, method = "standardize", MARGIN=1)
+
+#AAD_collapsed.trel <- decostand(x=AAD_collapsed_mat, method = "total", MARGIN=1)
+#AAD_collapsed.tmax <- decostand(x=AAD_collapsed_mat, method = "max", MARGIN=1)
+AAD_Collapsed_Immigration.tmax <- decostand(x=AAD_Collapsed_Immigration_mat, method = "max", MARGIN=1)
+
+# setEPS()
+# postscript(file="Figures/Heatmap.eps", width = 4, height = 4, paper = "special", pointsize = 10)
+# heatmap.2(AAD_collapsed.zs, dendrogram = "row", trace = "none", Colv = FALSE, cellnote = DeathNote, notecol = "black")
+# dev.off()
+# 
+# heatmap.2(AAD_collapsed.trel, dendrogram = "row", trace = "none", Colv = FALSE, cellnote = DeathNote, notecol = "red", col=magma)
+# 
+# setEPS()
+# postscript(file="Figures/Heatmap_MaxRel.eps", width = 4, height = 4, paper = "special", pointsize = 10)
+# heatmap.2(AAD_collapsed.tmax, dendrogram = "row", trace = "none", Colv = FALSE, cellnote = DeathNote, notecol = "red", col=magma)
+# dev.off()
+
+
+DeathNote <- matrix(nrow = nrow(TAD_Collapsed_Immigration_mat), ncol=ncol(TAD_Collapsed_Immigration_mat), data=NA)
+DeathNote[TAD_Collapsed_Immigration_mat==0] <- "X"
+row.names(DeathNote) <- row.names(TAD_Collapsed_Immigration_mat)
+
+row.names(DeathNote)
+
+DeathNote <- DeathNote[row.names(AAD_Collapsed_Immigration.tmax),]
+
+
+# AAD_collapsed.tmax.weird <- AAD_collapsed.tmax
+# 
+# AAD_collapsed.tmax.weird[DeathNote=="X"] <- -1
+# 
+# AAD_collapsed.tmax.weird999 <- AAD_collapsed.tmax
+# AAD_collapsed.tmax.weird999[DeathNote=="X"] <- -20
+
+# AAD_collapsed.tmax.NA <- AAD_collapsed.tmax
+# AAD_collapsed.tmax.NA[DeathNote=="X"] <- NA
+
+AAD_Collapsed_Immigration.tmax.NA <- AAD_Collapsed_Immigration.tmax
+AAD_Collapsed_Immigration.tmax.NA[DeathNote=="X"] <- NA
+
+AAD_Collapsed_Immigration.tmax.NA.50 <- AAD_Collapsed_Immigration.tmax.NA[1:50,]
+
+
+
+# AAD_collapsed.tmax.NA <- AAD_collapsed.tmax.NA[1:50,]
+
+heatmap_taxonomy <- FinestResolved[FinestResolved$OTU%in%row.names(AAD_Collapsed_Immigration.tmax.NA),]
+heatmap_taxonomy <- paste(heatmap_taxonomy$OTU, heatmap_taxonomy$Taxonomy, sep=" ")
+
+WhiteRed_palette <- colorRampPalette(colors = c("white","red"))
+BlackRed_palette <- colorRampPalette(colors = c("black","red"))
+
+# setEPS()
+# postscript(file="Figures/Heatmap_MaxRel_-1.eps", width = 6, height = 10, paper = "special", pointsize = 10)
+# heatmap.2(AAD_collapsed.tmax.weird[1:20,], dendrogram = "row", trace = "none", Colv = FALSE, notecol = "red", col=magma, labCol = c("Week 4", "Week 5", "Week 6", "Week 10", "Week 14", "Week 15", "Week 16", "Week 20", "Week 45"), margins = c(5,9))
+# dev.off()
+# 
+# setEPS()
+# postscript(file="Figures/Heatmap_MaxRel_-20.eps", width = 6, height = 10, paper = "special", pointsize = 10)
+# heatmap.2(AAD_collapsed.tmax.weird999[1:20,], dendrogram = "row", trace = "none", Colv = FALSE, notecol = "red", col=magma, labCol = c("Week 4", "Week 5", "Week 6", "Week 10", "Week 14", "Week 15", "Week 16", "Week 20", "Week 45"), margins = c(5,9))
+# dev.off()
+
+
+
+# setEPS()
+# postscript(file="Figures/Heatmap_MaxRel_NA.eps", width = 6, height = 10, paper = "special", pointsize = 10)
+# heatmap.2(AAD_collapsed.tmax.NA, dendrogram = "row", trace = "none", Colv = FALSE, notecol = "red", col=BlackRed_palette(n=20), labCol = c("Week 4", "Week 5", "Week 6", "Week 10", "Week 14", "Week 15", "Week 16", "Week 20", "Week 45"),labRow = heatmap_taxonomy, margins = c(5,9))
+# dev.off()
+
+
+
+setEPS()
+postscript(file="Figures/Heatmap_MaxRel_NA.eps", width = 6, height = 10, paper = "special", pointsize = 10)
+heatmap.2(AAD_Collapsed_Immigration.tmax.NA.50, na.color="black",dendrogram = "row", trace = "none", Colv = FALSE, notecol = "red", col=WhiteRed_palette(n=20), ,labRow = heatmap_taxonomy, margins = c(5,9))
+dev.off()
+
+
+
+
+# setEPS()
+# postscript(file="Figures/Heatmap_MaxRel_100OTUs.eps", width = 6, height = 10, paper = "special", pointsize = 10)
+# heatmap.2(AAD_collapsed.tmax.weird, dendrogram = "row", trace = "none", Colv = FALSE, notecol = "red", col=WhiteRed_palette(n=50), labCol = c("Week 4", "Week 5", "Week 6", "Week 10", "Week 14", "Week 15", "Week 16", "Week 20", "Week 45"), labRow = heatmap_taxonomy, cexRow = .1 + 1/log10(100), margins = c(5,9))
+# dev.off()
+#heatmap.2(TAD_collapsed.zs, dendrogram = "row", trace = "none", Colv = FALSE)
+
+
+# setEPS()
+# postscript(file="Figures/Heatmap_MaxRel_50OTUs.eps", width = 6, height = 10, paper = "special", pointsize = 10)
+# heatmap.2(AAD_collapsed.tmax.weird, dendrogram = "row", trace = "none", Colv = FALSE, notecol = "red", col=magma, labCol = c("Week 4", "Week 5", "Week 6", "Week 10", "Week 14", "Week 15", "Week 16", "Week 20", "Week 45"), labRow = heatmap_taxonomy, cexRow = .1 + 1/log10(100), margins = c(5,9))
+# dev.off()
+
+
+
+```
+
+# Phantom Taxa 
+
+```{r}
+Phantom_RNA <- RNA_rare
+Phantom_RNA[Ratio!=100] <- 0
+
+DNA_PA <- 1*(DNA_rare>0)
+RNA_PA <- 2*(RNA_rare>0)
+Total <- DNA_PA + RNA_PA
+
+Total_PA <- 1*(Total>0)
+
+hist(colSums(Ratio==100)/colSums(Total_PA))
+
+Active_DNA_rel <-decostand(Active_DNA, method = "total", MARGIN = 2)
+
+Ratio_Active_DNA_rel <- Ratio
+Ratio_Active_DNA_rel[Active_DNA_rel==0] <- NA
+
+Active_DNA_rel[Active_DNA_rel==0] <- NA
+
+Active_DNA_rel <- as.data.frame(Active_DNA_rel)
+Ratio_Active_DNA_rel <- as.data.frame(Ratio_Active_DNA_rel)
+
+Active_DNA_rel$OTU <- row.names(Active_DNA_rel)
+Ratio_Active_DNA_rel$OTU <- row.names(Ratio_Active_DNA_rel)
+library(reshape2)
+Active_DNA_rel_long <- melt(Active_DNA_rel, id.vars = "OTU", measure.vars = colnames(Active_DNA_rel)[1:123])
+
+colnames(Ratio_Active_DNA_rel) <- gsub("RNA", "DNA", colnames(Ratio_Active_DNA_rel))
+
+Ratio_Active_DNA_rel_long <- melt(Ratio_Active_DNA_rel, id.vars = "OTU", measure.vars = colnames(Active_DNA_rel)[1:123] )
+
+Ratio_Active_DNA_rel_long$value[is.na(Active_DNA_rel_long$value)] <- NA 
+  
+colnames(Ratio_Active_DNA_rel_long) <- c("OTU", "Sample", "Ratio")
+colnames(Active_DNA_rel_long) <- c("OTU", "Sample", "RelAbund")
+
+Total_Ratio_Rel_Active <- left_join(Active_DNA_rel_long, Ratio_Active_DNA_rel_long, by=c("OTU", "Sample"))
+
+Fig8A <- ggplot(Total_Ratio_Rel_Active, aes(x=log10(Ratio), y=log10(RelAbund)))+
+  geom_point(pch=1)+
+  ylab("log10(RelAbund")+
+  xlab("log10(rRNA:rRNA gene ratio)")
+
+
+
+```
+
+
+```{r}
+# Fraction Phantom OTUs of total observed OTU's per sample
+
+hist(colSums(Ratio==100)/colSums(Total_PA)*100, main ="Contribution of Phantom Taxa to Total Sample Richness", ylab="Number of Samples", xlab= "Percent Total Sample Richness ")
+
+Phantom.df <- data.frame(Sample=colnames(Ratio), PercentPhantomRichness = colSums(Ratio==100)/colSums(Total_PA)*100, PercentPhantomRNA=colSums(Phantom_RNA)/colSums(RNA_rare)*100)
+
+Fig8B_TotalRichness <- ggplot(Phantom.df, aes(x=PercentPhantomRichness))+
+  geom_histogram()+
+  xlab("Percent Total Sample Richness ")+
+  ylab("Number of Samples")+
+  xlim(0,100)
+
+
+Fig8C_Community <- ggplot(Phantom.df, aes(x=PercentPhantomRNA))+
+  geom_histogram()+
+  xlab("Percent RNA Reads")+
+  ylab("Number of Samples")+
+  xlim(0,100)
+
+ggplot(Phantom.df, aes(x=PercentPhantomRNA, y=PercentPhantomRichness))+
+  geom_point()+
+  geom_text(aes(label=Sample))
+
+setEPS()
+postscript(file = "Figures/Figure8_Phantoms.eps", paper = "special", width=4, height=6,pointsize = 10)
+plot_grid(Fig8A, Fig8B_TotalRichness, Fig8C_Community, ncol=1)
+dev.off()
+
+# # Percent of Community in Phantom OTUs
+# hist(colSums(Phantom_RNA)/colSums(RNA_rare)*100, main = "Contribution of Phantom taxa to Sample RNA reads", ylab="Number of Samples", xlab="Percent RNA reads")
+# 
+# 
+# #Percent Phantom OTUs
+# hist(colSums(Ratio==100)/colSums(RNA_rare>0), xlab ="% Phantom OTUs (RNA)", ylab="Sample")
+# 
+# 
+# 
+# colnames(RNA_rare)[(colSums(Ratio==100)/colSums(RNA_rare>0))>.8]
+# 
+# Percent_Comm_Phantom <- colSums(Phantom_RNA)/colSums(RNA_rare)
+# 
+# write.table(x= Percent_Comm_Phantom[names(Percent_Comm_Phantom)%in%colnames(RNA_rare)[(colSums(Ratio==100)/colSums(RNA_rare>0))>.8]], file="High_Phantom_OTUs.txt",  sep="\t", quote=FALSE)
+# 
+# Percent_Comm_Phantom[Percent_Comm_Phantom>.10]
+
+cor.test(log10(Total_Ratio_Rel_Active$RelAbund), log10(Total_Ratio_Rel_Active$Ratio))
+```
+
+# qPCR
+```{r}
+
+qPCR <- read.table("InputFiles/qPCR_Total.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE, row.names = NULL)
+
+
+map_qPCR <- left_join(map_DNA, qPCR, by="Sample")
+map_qPCR$Copies[map_qPCR$Copies<27] <- 0
+map_qPCR$Copies[is.na(map_qPCR$Copies)] <- 0
+
+map_qPCR$SoilCopies <- map_qPCR$Copies*20
+
+
+map_qPCR_DisturbanceStage <- map_qPCR[map_qPCR$Timepoint<8,]
+map_qPCR_RecoveryStage <- map_qPCR[map_qPCR$Timepoint>7,]
+
+
+map_qPCR_DisturbanceStage0 <- map_qPCR_DisturbanceStage
+map_qPCR_DisturbanceStage0$Copies[is.na(map_qPCR_DisturbanceStage0$Copies)] <- 0
+
+map_qPCR_RecoveryStage0 <- map_qPCR_RecoveryStage
+map_qPCR_RecoveryStage0$Copies[is.na(map_qPCR_RecoveryStage0$Copies)] <- 0
+
+map_qPCR_DisturbanceStage0$CopiesSoil <- map_qPCR_DisturbanceStage0$Copies*20
+map_qPCR_RecoveryStage0$CopiesSoil <- map_qPCR_RecoveryStage0$Copies*20
+
+
+
+Fig3A <- ggplot(map_qPCR_DisturbanceStage0, aes(x=Week, y=CopiesSoil,group=interaction(Week,Disturbance), color=Disturbance))+
+  geom_boxplot(aes(group=interaction(factor(Week), Disturbance)), outlier.shape = NA)+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  geom_point(position = position_dodge(width=0.75), aes(color=Disturbance, shape=Treatments))+
+  geom_point(position=position_dodge(width=.75),aes(color=Disturbance,shape=Treatments))+
+  scale_shape_manual(values=c(21,22,24))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_x_continuous(breaks=c(4,5,6,10,14,15,16))+
+  theme(axis.text.x = element_text(size=10))
+
+Fig3B <- ggplot(map_qPCR_RecoveryStage0, aes(x=Week, y=CopiesSoil, color=Treatments))+
+  geom_boxplot(aes(group=interaction(factor(Week), Treatments)), outlier.shape=NA)+
+  geom_point(position=position_dodge(width=15), aes(color=Treatments, shape=Treatments))+
+  scale_shape_manual(values=c(21,22,24))+
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  guides(fill=FALSE, color=FALSE, shape=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  ylim(0,5*10^8)+
+  scale_x_continuous(breaks=c(20,45))+
+  theme(axis.text.x = element_text(size=10))
+
+
+Fig3A_Leg <- ggplot(map_qPCR_DisturbanceStage0, aes(x=Week, y=CopiesSoil, color=Disturbance))+
+  geom_boxplot(aes(group=interaction(factor(Week), Disturbance)))+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  guides(fill=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)
+
+Fig3AB_Leg <- ggplot(map_qPCR_DisturbanceStage0, aes(x=Week, y=CopiesSoil, color=Disturbance))+
+  geom_boxplot(aes(group=interaction(factor(Week), Disturbance)))+
+  geom_point(position = position_dodge(width=0.75), aes(color=Disturbance, shape=Treatments))+
+  scale_shape_manual(values=c(21,22,24))+
+  scale_color_manual(values=c("#E69F00", "#0072B2"))+
+  guides(fill=FALSE, color=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)
+
+Fig3B_Leg <-  ggplot(map_qPCR_RecoveryStage0, aes(x=Week, y=CopiesSoil, color=Treatments))+
+  geom_boxplot(aes(group=interaction(factor(Week), Treatments)))+
+  scale_color_manual(values = c("#E69F00", "#0072B2", "#CC79A7"))+
+  guides(fill=FALSE)+
+  ylab(NULL)+
+  xlab(NULL)+
+  ylim(0,5*10^8)
+
+Figure3A_Leg <- get_legend(Fig3A_Leg)
+Figure3AB_Leg <- get_legend(Fig3AB_Leg)
+Figure3B_Leg <- get_legend(Fig3B_Leg)
+
+y3.grob <- textGrob("16S rRNA gene copies per gram soil", 
+                   gp=gpar(fontface="bold", col="black", fontsize=15),rot=90)
+x3.grob <- textGrob("Week", 
+                   gp=gpar(fontface="bold", col="black", fontsize=15))
+Figure3 <- plot_grid(Fig3A, Fig3B, ncol = 2, rel_widths = c(2,1))
+Figure3 <- grid.arrange(arrangeGrob(Figure3, bottom = x3.grob, left = y3.grob))
+
+
+setEPS()
+postscript("Figures/Figure3_qPCR.eps", width=8, height=5,pointsize=10, paper="special")
+plot_grid(ncol=1, Figure3, plot_grid(Figure3A_Leg,Figure3AB_Leg, Figure3B_Leg, ncol = 3), rel_heights = c(3,1))
+dev.off()
+
+x_map <- map_qPCR_DisturbanceStage0[map_qPCR_DisturbanceStage0$Timepoint==1,]
+ktest <- kruskal.test(x_map$Copies, as.factor(x_map$Disturbance))
+ktest$statistic
+ktest$parameter
+
+map_qPCR_DisturbanceStage0_Dis <- map_qPCR_DisturbanceStage0[map_qPCR_DisturbanceStage0$Disturbance=="Y",]
+
+ktest_qPCR_1_7 <- data.frame(Timepoint=c(1:7), TestStatistic = rep(NA,7), Significance = rep(NA,7))
+ktest_qPCR_1_7_Dis <- data.frame(Timepoint=c(1:7), TestStatistic = rep(NA,7), Significance = rep(NA,7))
+for(i in 1:7){
+  x_map <- map_qPCR_DisturbanceStage0[map_qPCR_DisturbanceStage0$Timepoint==i,]
+  x_map_Dis <- map_qPCR_DisturbanceStage0_Dis[map_qPCR_DisturbanceStage0$Timepoint==i,]
+  ktest <- kruskal.test(x_map$Copies, as.factor(x_map$Disturbance))
+  ktest_dis <- kruskal.test(x_map_Dis$Copies, as.factor(x_map_Dis$Immigration))
+  ktest_qPCR_1_7$TestStatistic[i] <- ktest$statistic
+  ktest_qPCR_1_7$Significance[i] <- ktest$p.value
+  ktest_qPCR_1_7_Dis$TestStatistic[i] <- ktest_dis$statistic
+  ktest_qPCR_1_7_Dis$Significance[i] <- ktest_dis$p.value
+}
+ktest_qPCR_1_7_Dis
+
+write.table(file = "Tables/qPCR_DisvsIM.txt", x=ktest_qPCR_1_7_Dis, sep="\t", quote=FALSE, col.names = TRUE, row.names = FALSE)
+
+
+x_map_8 <- map_qPCR_RecoveryStage0[map_qPCR_RecoveryStage0$Timepoint==8,]
+x_map_9 <- map_qPCR_RecoveryStage0[map_qPCR_RecoveryStage0$Timepoint==9,]
+
+
+library(dunn.test)
+ktest_qPCR_8 <- kruskal.test(x_map_8$Copies, as.factor(x_map_8$Treatments))
+dunn.test(x_map_8$Copies, as.factor(x_map_8$Treatments))
+
+dunn.test(x_map_9$CopiesSoil, as.factor(x_map_9$DisIm))
+
+ktest_qPCR_1_7
+
+
+
+median(map_qPCR$SoilCopies[between(map_qPCR$Week, 5,15)&map_qPCR$Disturbance=="Y"])
+
+median(map_qPCR$SoilCopies[between(map_qPCR$Week, 7,15)&map_qPCR$Disturbance=="N"])
+
+
+
+
+```
+
+# OTU Responses
+```{r}
+OTU_Response <- read.table("InputFiles/OTU_Response_Patterns.txt", sep="\t", stringsAsFactors = FALSE, row.names = NULL, header = TRUE)
+
+OTU_Response <- left_join(OTU_Response, Taxonomy_Cleaned, by="OTU")
+
+OTU_Response$Category <- factor(OTU_Response$Category, levels=c("Resistant","Sensitive", "Early Transition", "Late Transition","Resilient", "Opportunists", "Immigrants"))
+
+OTU_Response$Class <- gsub("c:", "", OTU_Response$Class)
+
+OTU_Response$Class <- factor(OTU_Response$Class, levels=c("Acidobacteria", "Actinobacteria", "Thermoleophilia","Alphaproteobacteria", "Betaproteobacteria","Gammaproteobacteria", "Bacilli", "Clostridia", "SHA-26", "Spartobacteria", "Sphingobacteriia"))
+
+table(OTU_Response$Category)
+
+OTU_Response[OTU_Response$Category=="Immigrants",]
+
+unique(OTU_Response$Class[order(OTU_Response$Phylum)])
+
+Fig7B <- ggplot(OTU_Response, aes(x=Category))+
+  geom_bar(aes(fill=Class))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_x_discrete(drop=FALSE)+
+  ylab("Number OTUs")+
+  xlab("Response Pattern")
+
+
+ggsave("Figures/Figure7B_OTUResponse.eps", plot = Fig7B, device = "eps", width=6, height = 4, units = "in")
+hist(log10(Ratio))
+```
+
+```{r}
+Ratio_Dynamics <- Ratio
+Ratio_Dynamics[Ratio_Dynamics<1] <- -1
+Ratio_Dynamics[Ratio_Dynamics>=1] <- 1
+
+DNA_rare_PA <- DNA_rare
+DNA_rare_PA[DNA_rare_PA>0] <- 1
+
+
+
+
+Ratio_Dynamics_Recovery <- Ratio_Dynamics[,map_DNA$Timepoint>6]
+
+DNA_rare_Recovery <- DNA_rare[,map_DNA$Timepoint>6]
+
+map_Recovery <- map_DNA[map_DNA$Timepoint>6,]
+
+Disturbed_Microcosms <- unique(map_DNA$Microcosm[map_DNA$Disturbance=="Y"])
+
+Partial_BC <- NULL  
+for(i in  1:length(Disturbed_Microcosms)){
+  x_map <- map_Recovery[map_Recovery$Microcosm==Disturbed_Microcosms[i],]
+  x_rare <- DNA_rare_Recovery[,map_Recovery$Microcosm==Disturbed_Microcosms[i]]
+  x_dynamics <- Ratio_Dynamics_Recovery[,map_Recovery$Microcosm==Disturbed_Microcosms[i]]
+  if(nrow(x_map)==1){
+    
+  }
+  if(nrow(x_map)==2){
+    x12_dynamic <- x_dynamics[,1]*x_dynamics[,2]
+    part_bc <- sum(abs(x_rare[x12_dynamic==-1,1]-x_rare[x12_dynamic==-1,2]))/sum(colSums(x_rare))
+    tot_bc <- sum(abs(x_rare[,1]-x_rare[,2]))/sum(colSums(x_rare))
+    Partial_BC <- rbind(Partial_BC,c(x_map$Sample[1], x_map$Sample[2], part_bc, tot_bc, paste("T",x_map$Timepoint[1],"T",x_map$Timepoint[2], sep="")))
+  }
+  if(nrow(x_map)==3){
+    x12_dynamic <- x_dynamics[,1]*x_dynamics[,2]
+    part12_bc <- sum(abs(x_rare[x12_dynamic==-1,1]-x_rare[x12_dynamic==-1,2]))/sum(colSums(x_rare[,c(1,2)]))
+    tot12_bc <- sum(abs(x_rare[,1]-x_rare[,2]))/sum(colSums(x_rare[,c(1,2)]))
+    x13_dynamic <- x_dynamics[,1]*x_dynamics[,3]
+    part13_bc <- sum(abs(x_rare[x12_dynamic==-1,1]-x_rare[x12_dynamic==-1,3]))/sum(colSums(x_rare[,c(1,3)]))
+    tot13_bc <- sum(abs(x_rare[,1]-x_rare[,2]))/sum(colSums(x_rare[,c(1,3)]))
+    x23_dynamic <- x_dynamics[,2]*x_dynamics[,3]
+    part23_bc <- sum(abs(x_rare[x12_dynamic==-1,2]-x_rare[x12_dynamic==-1,3]))/sum(colSums(x_rare[,c(2,3)]))
+    tot23_bc <- sum(abs(x_rare[,2]-x_rare[,3]))/sum(colSums(x_rare[,c(2,3)]))
+    Partial_BC <- rbind(Partial_BC, c(colnames(x_rare[,c(1,2)]), part12_bc, tot12_bc, "T7T8"), c(colnames(x_rare[,c(2,3)]), part23_bc, tot23_bc, "T8T9"),c(colnames(x_rare[,c(1,3)]), part13_bc, tot13_bc, "T7T9"))
+    
+  }
+  }
+  
+Partial_BC.df <- as.data.frame(Partial_BC)   
+Partial_BC.df$DynamicBC <- as.numeric(as.character(Partial_BC.df$V3))
+Partial_BC.df$TotalBC <- as.numeric(as.character(Partial_BC.df$V4))
+Partial_BC.df$Sample <- Partial_BC.df$V1
+colnames(Partial_BC.df) <- c("Sample1", "Sample2", "PBC", "TBC", "Comparison", "DynamicBC", "TotalBC", "Sample")
+
+Partial_BC_Map <- left_join(Partial_BC.df, map_DNA, by="Sample")
+
+Partial_BC_Map$DynamicFraction <- Partial_BC_Map$DynamicBC/Partial_BC.df$TotalBC
+
+ggplot(Partial_BC_Map, aes(x=Comparison, y=DynamicFraction))+
+  geom_boxplot(aes(group=interaction(Comparison,Immigration), color=Immigration))+
+  ylab("Fraction BC Dissimilarity due to Activity Dynamics")+
+  geom_point(aes(color=Immigration), position=position_dodge(width = 0.75))
+
+# Immigrant Conditionals needed
+# Zero at timepoint 7
+# Above Zero at Timepoint 8 and or 9 in immigration samples
+# Zero in timepoint 8 and 9 in disturbed control samples 
+
+Disturbed_W16 <- DNA_rare[,map_DNA$Disturbance=="Y"&map_DNA$Timepoint==7]
+Disturbed_Stage_2 <- DNA_rare[,map_DNA$Disturbance=="Y"&map_DNA$Timepoint>7]
+
+
+map_Disturbed_Stage2 <- map_DNA[map_DNA$Disturbance=="Y"&map_DNA$Timepoint>7,]
+
+t_DW16 <- t(as.matrix(Disturbed_W16))
+t_DS2 <- t(as.matrix(Disturbed_Stage_2))
+
+t_DW16 <- as.data.frame(t_DW16)
+t_DS2 <- as.data.frame(t_DS2)
+t_DS2$Timepoint <- map_Disturbed_Stage2$Timepoint  
+t_DS2$Immigration <- map_Disturbed_Stage2$Immigration
+
+t_DS2_collapsed <- t_DS2 %>%
+  group_by(Timepoint, Immigration) %>%
+  summarise_all(funs(mean))
+
+row.names(t_DS2_collapsed) <- paste(t_DS2_collapsed$Timepoint, t_DS2_collapsed$Immigration, sep="")
+t_DS2_collapsed <- t_DS2_collapsed[,-1]
+t_DS2_collapsed <- t_DS2_collapsed[,-1]
+DS2_Collapsed <- t(as.matrix(t_DS2_collapsed))
+colnames(DS2_Collapsed) <- c("Week20-", "Week20+", "Week45-", "Week45+")
+
+DW16_Collapsed <- rowMeans(Disturbed_W16)
+
+# Immigrant Conditionals needed
+# Zero at timepoint 7
+# Above Zero at Timepoint 8 and or 9 in immigration samples
+# Zero in timepoint 8 and 9 in disturbed control samples 
+
+Cond1 <- DW16_Collapsed==0
+Cond2A <- DS2_Collapsed[,2]>0
+Cond2B <- DS2_Collapsed[,4]>0
+Cond3A <- DS2_Collapsed[,1]==0
+Cond3B <- DS2_Collapsed[,3]==0
+
+Cond3 <- Cond3A * Cond3B
+
+Cond2 <- Cond2A + Cond2B
+Cond2[Cond2>0] <- 1
+
+Cond23 <- Cond2 * Cond3
+
+
+
+# Vector where 1 indicates an immigrant taxa and 0 indicate a non-immigrant taxa
+Immigrants <- Cond23*Cond1
+
+sum(Immigrants)
+names(Immigrants)==row.names(DNA_rare)
+
+
+Control16 <- DNA_rare[,map_DNA$Disturbance=="N"&map_DNA$Week==16]
+sum(Immigrants*rowSums(Control16)>0)/sum(Immigrants)
+
+Immigrants <- Immigrants*rowSums(Control16)>0
+
+
+Partial_BC_NoIM <- NULL  
+for(i in  1:length(Disturbed_Microcosms)){
+  x_map <- map_Recovery[map_Recovery$Microcosm==Disturbed_Microcosms[i],]
+  x_rare <- DNA_rare_Recovery[,map_Recovery$Microcosm==Disturbed_Microcosms[i]]
+  x_dynamics <- Ratio_Dynamics_Recovery[,map_Recovery$Microcosm==Disturbed_Microcosms[i]]
+  if(nrow(x_map)==1){
+    
+  }
+  if(nrow(x_map)==2){
+    x12_dynamic <- x_dynamics[,1]*x_dynamics[,2]
+    x12_dynamic[Immigrants==1] <- 0
+    im_bc <- sum(abs(x_rare[Immigrants==1,1]-x_rare[Immigrants==1,2]))/sum(colSums(x_rare))
+    part_bc <- sum(abs(x_rare[x12_dynamic==-1,1]-x_rare[x12_dynamic==-1,2]))/sum(colSums(x_rare))
+    tot_bc <- sum(abs(x_rare[,1]-x_rare[,2]))/sum(colSums(x_rare))
+    Partial_BC_NoIM <- rbind(Partial_BC_NoIM,c(x_map$Sample[1], x_map$Sample[2], part_bc,im_bc, tot_bc, paste("T",x_map$Timepoint[1],"T",x_map$Timepoint[2], sep="")))
+  }
+  if(nrow(x_map)==3){
+    x12_dynamic <- x_dynamics[,1]*x_dynamics[,2]
+    x12_dynamic[Immigrants==1] <- 0
+    im12_bc <- sum(abs(x_rare[Immigrants==1,1]-x_rare[Immigrants==1,2]))/sum(colSums(x_rare))
+    part12_bc <- sum(abs(x_rare[x12_dynamic==-1,1]-x_rare[x12_dynamic==-1,2]))/sum(colSums(x_rare[,c(1,2)]))
+    tot12_bc <- sum(abs(x_rare[,1]-x_rare[,2]))/sum(colSums(x_rare[,c(1,2)]))
+    x13_dynamic <- x_dynamics[,1]*x_dynamics[,3]
+    x13_dynamic[Immigrants==1]<- 0
+    im13_bc <- sum(abs(x_rare[Immigrants==1,1]-x_rare[Immigrants==1,3]))/sum(colSums(x_rare))
+    part13_bc <- sum(abs(x_rare[x12_dynamic==-1,1]-x_rare[x12_dynamic==-1,3]))/sum(colSums(x_rare[,c(1,3)]))
+    tot13_bc <- sum(abs(x_rare[,1]-x_rare[,2]))/sum(colSums(x_rare[,c(1,3)]))
+    x23_dynamic <- x_dynamics[,2]*x_dynamics[,3]
+    x23_dynamic[Immigrants==1] <- 0
+    im23_bc <- sum(abs(x_rare[Immigrants==1,2]-x_rare[Immigrants==1,3]))/sum(colSums(x_rare))
+    part23_bc <- sum(abs(x_rare[x12_dynamic==-1,2]-x_rare[x12_dynamic==-1,3]))/sum(colSums(x_rare[,c(2,3)]))
+    tot23_bc <- sum(abs(x_rare[,2]-x_rare[,3]))/sum(colSums(x_rare[,c(2,3)]))
+    Partial_BC_NoIM <- rbind(Partial_BC_NoIM, c(colnames(x_rare[,c(1,2)]), part12_bc,im12_bc, tot12_bc, "T7T8"), c(colnames(x_rare[,c(2,3)]), part23_bc,im23_bc, tot23_bc, "T8T9"),c(colnames(x_rare[,c(1,3)]), part13_bc,im13_bc, tot13_bc, "T7T9"))
+    
+  }
+  }
+
+Partial_BC_NoIM.df <- as.data.frame(Partial_BC_NoIM)   
+Partial_BC_NoIM.df$DynamicBC <- as.numeric(as.character(Partial_BC_NoIM.df$V3))
+Partial_BC_NoIM.df$TotalBC <- as.numeric(as.character(Partial_BC_NoIM.df$V5))
+Partial_BC_NoIM.df$Sample <- Partial_BC_NoIM.df$V1
+Partial_BC_NoIM.df$ImBC <- as.numeric(as.character(Partial_BC_NoIM.df$V4))
+
+colnames(Partial_BC_NoIM.df) <- c("Sample1", "Sample2", "DBC","IBC", "TBC", "Comparison", "DynamicBC", "TotalBC", "Sample", "ImBC")
+
+Partial_BC_NoIM_Map <- left_join(Partial_BC_NoIM.df, map_DNA, by="Sample")
+
+Partial_BC_NoIM_Map$DynamicFraction <- Partial_BC_NoIM_Map$DynamicBC/Partial_BC_NoIM_Map$TotalBC
+
+
+Partial_BC_NoIM_Map$ImmigrationFraction <- Partial_BC_NoIM_Map$ImBC/Partial_BC_NoIM_Map$TotalBC
+
+
+
+ggplot(Partial_BC_NoIM_Map, aes(x=Comparison, y=DynamicFraction))+
+  geom_boxplot(aes(group=interaction(Comparison,Immigration), color=Immigration))+
+  ylab("Fraction BC Dissimilarity due to Activity Dynamics")+
+  geom_point(aes(color=Immigration), position=position_dodge(width = 0.75))+
+  scale_color_manual(breaks=c("Disturbance", "Disturbance + Immigration"), values = c("#0072B2", "#CC79A7"))
+
+
+ggplot(Partial_BC_NoIM_Map, aes(x=Comparison, y=ImmigrationFraction))+
+  geom_boxplot(aes(group=interaction(Comparison,Immigration), color=Immigration))+
+  ylab("Fraction BC Dissimilarity due to Immigration")+
+  geom_point(aes(color=Immigration), position=position_dodge(width = 0.75))
+
+range(Partial_BC_NoIM_Map$ImmigrationFraction[Partial_BC_NoIM_Map$Immigration=="Y"])
+median(Partial_BC_NoIM_Map$ImmigrationFraction[Partial_BC_NoIM_Map$Immigration=="Y"])
+```
+
+
+
+```{r}
+Disturbance_Stage1 <- DNA_rare[,map_DNA$Disturbance=="Y"]#&between(map_DNA$Timepoint,1.5,7.5)
+Disturbance_Stage1_NoZeroes <- Disturbance_Stage1[rowSums(Disturbance_Stage1)>0,]
+
+map_Disturbance_Stage1 <- map_DNA[map_DNA$Disturbance=="Y",]#&between(map_DNA$Timepoint,1.5,7.5)
+
+Disturbance_Stage1_NoZeroes <- Disturbance_Stage1_NoZeroes[order(decreasing = TRUE, rowSums(Disturbance_Stage1_NoZeroes)),]
+
+Disturbance_Stage1_NoZeroes_250 <- Disturbance_Stage1_NoZeroes[1:100,]
+Disturbance_Stage1_NoZeroes_250 <- Disturbance_Stage1_NoZeroes_250[,order(map_Disturbance_Stage1$Timepoint)]
+
+Disturbance_Stage1.zs <- decostand(Disturbance_Stage1_NoZeroes_250, method = "standardize", MARGIN = 1)
+
+map_Disturbance_Stage1_ordered <- map_Disturbance_Stage1[order(map_Disturbance_Stage1$Timepoint),]
+ColColors <- rep("black", nrow(map_Disturbance_Stage1))
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==2] <- "red"
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==3] <- "blue"
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==4] <- "green"
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==5] <- "yellow"
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==6] <- "grey"
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==7] <- "white"
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==8] <- "cyan"
+ColColors[map_Disturbance_Stage1_ordered$Timepoint==9] <- "orange"
+
+library(gplots)
+setEPS()
+postscript(file="ConsistentReponse.eps", width=5, height=5, paper = "special")
+heatmap.2(Disturbance_Stage1.zs, Colv = FALSE, ColSideColors = ColColors, trace="none")
+dev.off()
+
+setEPS()
+postscript(file="ConsistentReponse_NotZscored.eps", width=5, height=5, paper = "special")
+heatmap.2(Disturbance_Stage1_NoZeroes_250, Colv = FALSE, trace = "none", ColSideColors = ColColors)
+dev.off()
+ncol(Disturbance_Stage1)
+nrow(map_Disturbance_Stage1)
+```
+
+# rrnDB
+```{r}
+taxonomy <- read_csv("InputFiles/Taxonomy.csv", col_names = TRUE)
+
+Taxonomy_Cleaned <- gsub("\\(......\\)", "", taxonomy$Domain)
+
+Taxonomy_Cleaned <- data.frame(OTU= taxonomy$OTU, stringsAsFactors = FALSE)
+Taxonomy_Cleaned$Domain <- gsub("\\(......\\)", "", taxonomy$Domain)
+Taxonomy_Cleaned$Phylum <- gsub("\\(......\\)", "", taxonomy$Phylum)
+Taxonomy_Cleaned$Class <- gsub("\\(......\\)", "", taxonomy$Class)
+Taxonomy_Cleaned$Order <- gsub("\\(......\\)", "", taxonomy$Order)
+Taxonomy_Cleaned$Family <- gsub("\\(......\\)", "", taxonomy$Family)
+Taxonomy_Cleaned$Genus <- gsub("\\(......\\)", "", taxonomy$Genus)
+Taxonomy_Cleaned$Species <- gsub("\\(......\\)", "", taxonomy$Species)
+
+
+rrnDB <- read.table("InputFiles/rrnDB-5.5_pantaxa_stats_NCBI.tsv", sep="\t", stringsAsFactors = FALSE, header = TRUE)
+
+Tax_Short <- Taxonomy_Cleaned
+Tax_Short$Domain <- gsub("k:", "", Tax_Short$Domain)
+Tax_Short$Phylum <- gsub("p:", "", Tax_Short$Phylum)
+Tax_Short$Class <- gsub("c:", "", Tax_Short$Class)
+Tax_Short$Order <- gsub("o:", "", Tax_Short$Order)
+Tax_Short$Family <- gsub("f:", "", Tax_Short$Family)
+Tax_Short$Genus <- gsub("g:", "", Tax_Short$Genus)
+Tax_Short$Species <- gsub("k:", "", Tax_Short$Species)
+
+
+
+Taxonomy_rrn <- data.frame(OTU = rep(NA, nrow(Tax_Short)), rrnDB_Rank = rep(NA, nrow(Tax_Short)),rrnDB_Name = rep(NA, nrow(Tax_Short)), rrnDB_Mean = rep(NA, nrow(Tax_Short)))
+
+Ranks <- unique(rrnDB$rank)
+Ranks <- Ranks[c(7,6,5,4,3,2,1)]
+
+for(i in 1:nrow(Tax_Short)){
+  y <- ncol(Tax_Short)-sum(is.na(Tax_Short[i,]))
+  z <- Tax_Short[i,]
+  Taxonomy_rrn$OTU[i] <- Tax_Short$OTU[i]
+  for(x in 2:y){
+    rrnDB_sub <- rrnDB[rrnDB$rank==Ranks[x-1],]
+  if(z[1,x]%in%rrnDB_sub$name){
+    Taxonomy_rrn$rrnDB_Rank[i] <- Ranks[x-1]
+    Taxonomy_rrn$rrnDB_Name[i] <- rrnDB_sub$name[rrnDB_sub$name==z[1,x]]
+    Taxonomy_rrn$rrnDB_Mean[i] <- rrnDB_sub$mean[rrnDB_sub$name==z[1,x]]
+  }    
+  }
+}
+
+Taxonomy_rrn$OTU==row.names(DNA_rare)
+DNA_rare <- DNA_rare[order(row.names(DNA_rare)),]
+
+Taxonomy_rrn_short <- Taxonomy_rrn[Taxonomy_rrn$OTU%in%row.names(DNA_rare),]
+
+Taxonomy_rrn_short <- Taxonomy_rrn_short[order(Taxonomy_rrn_short$OTU),]
+
+sum(row.names(DNA_rare)==Taxonomy_rrn_short$OTU)
+
+Individuals <- DNA_rare/Taxonomy_rrn_short$rrnDB_Mean
+
+Average_Copies_2 <- rep(NA, ncol(DNA_rare))
+Average_Copies <- rep(NA, ncol(DNA_rare))
+for(i in 1:ncol(DNA_rare)){
+  Average_Copies_2[i] <- sum(Individuals[,i]*Taxonomy_rrn_short$rrnDB_Mean)/sum(Individuals[,i])
+  Average_Copies[i] <- sum(DNA_rare[,i]*Taxonomy_rrn_short$rrnDB_Mean)/sum(DNA_rare[,i])
+}
+
+
+
+cbind(Average_Copies, Average_Copies_2)
+Average_Copies
+Average_Copies_2
+
+CopyNumberCorrection <- data.frame(Sample = colnames(DNA_rare), Average_16S_Copies = Average_Copies_2)
+
+map_Corrected_qPCR <- left_join(map_qPCR, CopyNumberCorrection, by="Sample")
+
+map_Corrected_qPCR$Individuals <- map_Corrected_qPCR$SoilCopies/map_Corrected_qPCR$Average_16S_Copies
+
+
+mean(map_Corrected_qPCR$Individuals[map_Corrected_qPCR$Week==16&map_Corrected_qPCR$Disturbance=="N"])
+
+
+ggplot(map_Corrected_qPCR, aes(x=Week, y=Individuals))+
+  geom_boxplot(aes(group=interaction(factor(Week), Disturbance), color=Disturbance), outlier.shape = NA)
+
+map_Corrected_disturbancestage <- map_Corrected_qPCR[map_Corrected_qPCR$Timepoint<8,]
+
+map_Corrected_recoverystage <-  map_Corrected_qPCR[map_Corrected_qPCR$Timepoint>7,]
+
+ggplot(map_Corrected_recoverystage, aes(x=Week, y=Average_16S_Copies))+
+  geom_boxplot(aes(group=interaction(factor(Week), Treatments), color=Treatments))
+
+
+ggplot(map_Corrected_disturbancestage, aes(x=Week, y=Average_16S_Copies))+
+  geom_boxplot(aes(group=interaction(factor(Week), Disturbance), color=Disturbance))
+
+
+ktest_Indi_1_7 <- data.frame(Timepoint=c(1:7), TestStatistic = rep(NA,7), Significance = rep(NA,7))
+for(i in 1:7){
+  x_map <- map_Corrected_disturbancestage[map_Corrected_disturbancestage$Timepoint==i,]
+  ktest <- kruskal.test(x_map$Individuals, as.factor(x_map$Disturbance))
+  ktest_Indi_1_7$TestStatistic[i] <- ktest$statistic
+  ktest_Indi_1_7$Significance[i] <- ktest$p.value
+}
+
+ktest_Indi_1_7
+
+cbind(ktest_Indi_1_7, ktest_qPCR_1_7)
+
+ktest_Indi_1_7$Raw_Statistic <- ktest_qPCR_1_7$TestStatistic
+ktest_Indi_1_7$Raw_Pvalue <- ktest_qPCR_1_7$Significance
+
+write.table(file="~/Adjusted_16S.txt", ktest_Indi_1_7, quote = FALSE, row.names = FALSE, sep="\t")
+
+
+map_Corrected_8 <- map_Corrected_qPCR[map_Corrected_qPCR$Timepoint==8,]
+map_Corrected_9 <- map_Corrected_qPCR[map_Corrected_qPCR$Timepoint==9,]
+
+k_indi_T8 <- kruskal.test(map_Corrected_8$Individuals, as.factor(map_Corrected_8$Treatments))
+
+k_indi_T9 <- kruskal.test(map_Corrected_9$Individuals, as.factor(map_Corrected_9$Treatments))
+
+dunn.test(map_Corrected_8$Individuals, as.factor(map_Corrected_8$DisIm))
+
+dunn.test(map_Corrected_9$Individuals, as.factor(map_Corrected_9$DisIm))
+
+dunn.test(x_map_8$CopiesSoil, as.factor(x_map_8$DisIm))
+
+Raw_9 <- dunn.test(x_map_9$CopiesSoil, as.factor(x_map_9$DisIm))
+
+Raw_9
+```
+

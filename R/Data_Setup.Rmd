@@ -1,0 +1,65 @@
+---
+title: "Data Set Up"
+author: "Jackson Sorensen"
+date: "6/6/2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Reading in data tables
+This code is meant to help set up the data structures that will be used in later analyses and save them as R data structures to make for more efficient running later. 
+## Microcosm metadata map
+
+Reading in the metadata map for the microcosms
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+setwd("~/GitHub_Repos/ShadeLab/Sorensen_Microcosm/R")
+map <- read_csv("InputFiles/Microcosm_Map.csv")
+map$Date <- as.Date(map$Date, "%m/%d/%y")
+```
+
+## Reading in OTU table and collapsing
+When we performed sequencing, we submitted 308 samples that were pooled together and then sequenced on 4 different MiSeq Runs. The following code reads in the otu table that has 4 columns for every sample submitted and collapses these 4 columns down to a single column for each sample by summing the 4. 
+```{r,message=FALSE}
+AllSamples <- read_table("InputFiles/AllSamples.txt", col_names = FALSE)
+
+map <- map[order(map$Sample),]
+
+AllSamples$X2 <- rep(map$Sample, 4)
+
+otu <- read_tsv("InputFiles/table_combined_merged_otus.txt", col_names = TRUE)
+
+otu <- otu %>%
+    gather(key = SequenceName, value = value, 2:ncol(otu)) %>% 
+    spread_(key = names(otu)[1],value = 'value')
+
+
+
+colnames(AllSamples) <- c("SequenceName", "Sample")
+
+otu <- left_join(otu, AllSamples, by="SequenceName")
+otu<- otu[,-1]
+
+otu_collapsed <- otu %>% 
+  group_by(Sample) %>%
+  summarise_all(funs(sum))
+
+otu_collapsed <- otu_collapsed %>%
+    gather(key = OTU, value = value, 2:ncol(otu_collapsed)) %>% 
+    spread_(key = names(otu_collapsed)[1],value = 'value')
+otu_collapsed <- as.data.frame(otu_collapsed)
+row.names(otu_collapsed) <- otu_collapsed$OTU
+otu_collapsed <- otu_collapsed[,-1]
+
+saveRDS(otu_collapsed, file = "DataStructures/otu_collapsed.RDS")
+saveRDS(map, file="DataStructures/map.RDS")
+
+
+```

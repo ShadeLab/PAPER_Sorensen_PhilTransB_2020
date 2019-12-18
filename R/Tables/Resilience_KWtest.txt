@@ -1,0 +1,4 @@
+RecoveryPeriod	KW_Chi_Squared	Pvalue	NoImmigration	Immigration
+Week 16 to Week 45	3	0.0832645166635505	2	3
+Week 16 to Week 20	4.5	0.0338948535246893	4	3
+Week 20 to Week 45	1.8	0.179712494879	1	3
