@@ -10,7 +10,7 @@
 The raw data for this study are available in the NCBI SRA under bioproject [PRJNA559185](https://www.ncbi.nlm.nih.gov/sra/?term=PRJNA559185).
 
 
-### To cite this work or code:
+### To cite this work or code
 Sorensen, JW and A Shade. 2020.  Dormancy dynamics and dispersal contribute to soil microbiome resilience. Phil. Trans R. Soc. B. 20190266.  http://dx.doi.org/10.1098/rstb.2019.0255
 
 
