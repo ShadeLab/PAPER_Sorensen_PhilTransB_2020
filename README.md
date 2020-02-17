@@ -21,6 +21,7 @@ In disturbance ecology, stability is composed of resistance to change and resili
 ### Funding
 This work was supported by the National Science Foundation under Grant No DEB [#1749544](https://www.nsf.gov/awardsearch/showAward?AWD_ID=1749544&HistoricalAwards=false). This work was supported in part by Michigan State University through computational resources provided by the [Institute for Cyber-Enabled Research](https://icer.msu.edu/). 
 
+
 ### More info
 [ShadeLab](http://ashley17061.wixsite.com/shadelab/home)
 
